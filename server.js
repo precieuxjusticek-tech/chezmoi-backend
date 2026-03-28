@@ -636,7 +636,7 @@ app.post("/api/payment/deblocage", async (req, res) => {
         };
 
         // Utiliser la bonne URL sandbox
-        const response = await fetch("https://pay.sandbox.yabetoopay.com/v1/pay", {
+        const response = await fetch("https://pay.sandbox.yabetoopay.com/pay", {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
