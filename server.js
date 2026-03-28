@@ -657,25 +657,17 @@ app.post("/api/payment/deblocage", async (req, res) => {
             body: JSON.stringify(body)
         });
 
-        const data = await response.json();
-
-        console.log("Réponse Yabeto :", data);
-
-        if (data.checkoutUrl) {
-
-            res.json({
-                message: "Paiement initié",
-                redirectUrl: data.checkoutUrl
-            });
-
-        } else {
-
-            res.status(400).json({
-                message: "Erreur paiement",
+        if (!data.url) {
+            return res.status(400).json({
+                message: "Erreur création paiement",
                 details: data
             });
-
         }
+
+        res.json({
+            message: "Paiement initié",
+            redirectUrl: data.url
+        });
 
     } catch (error) {
 
