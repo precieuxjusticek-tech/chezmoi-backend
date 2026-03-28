@@ -616,24 +616,27 @@ app.post("/api/idea", async (req, res) => {
 // ==================== PAIEMENT DÉBLOCAGE ====================
 // ====================================================
 app.post("/api/payment/deblocage", async (req, res) => {
-    const { name, msisdn, amount, annonceId, description } = req.body;
+    const { name, msisdn, provider, amount, annonceId, description } = req.body;
 
-    if (!name || !msisdn || !amount || !annonceId) {
+    if (!name || !msisdn || !provider || !amount || !annonceId) {
         return res.status(400).json({ message: "Champs obligatoires manquants" });
     }
 
     try {
+        // Préparer la requête de paiement Yabeto
         const body = {
+            merchant_id: YABETOOPAY_MERCHANT_ID,
             amount,
             currency: "XAF",
             customer_name: name,
             customer_msisdn: msisdn,
-            description: description || `Paiement déblocage ${annonceId}`,
-            success_url: `https://chezmoi.com/success?annonce=${annonceId}`,
-            cancel_url: `https://chezmoi.com/cancel?annonce=${annonceId}`,
+            provider,
+            description,
+            reference: `deblocage_${annonceId}_${Date.now()}`,
         };
 
-        const response = await fetch("https://api.yabetoopay.com/v1/checkout-sessions", {
+        // Utiliser la bonne URL sandbox
+        const response = await fetch("https://pay.sandbox.yabetoopay.com/v1/pay", {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
@@ -642,11 +645,17 @@ app.post("/api/payment/deblocage", async (req, res) => {
             body: JSON.stringify(body)
         });
 
-        const data = await response.json();
-        console.log("Réponse Yabeto :", data);
+        const text = await response.text();
+        console.log("Réponse Yabetoo sandbox :", text);
 
-        if (data.payment_url) {
-            res.json({ message: "Paiement initié", redirectUrl: data.payment_url });
+        const data = JSON.parse(text);
+
+        if (data.status === "success" && data.payment_url) {
+            res.json({
+                message: "Paiement initié",
+                paymentId: data.payment_id,
+                redirectUrl: data.payment_url
+            });
         } else {
             res.status(400).json({ message: "Erreur paiement", details: data });
         }
