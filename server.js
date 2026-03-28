@@ -657,6 +657,8 @@ app.post("/api/payment/deblocage", async (req, res) => {
             body: JSON.stringify(body)
         });
 
+        const data = await response.json();
+
         if (!data.url) {
             return res.status(400).json({
                 message: "Erreur création paiement",
