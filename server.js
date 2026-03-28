@@ -616,6 +616,7 @@ app.post("/api/idea", async (req, res) => {
 // ==================== PAIEMENT DÉBLOCAGE ====================
 // ====================================================
 app.post("/api/payment/deblocage", async (req, res) => {
+
     const { name, msisdn, provider, amount, annonceId, description } = req.body;
 
     if (!name || !msisdn || !provider || !amount || !annonceId) {
@@ -623,20 +624,31 @@ app.post("/api/payment/deblocage", async (req, res) => {
     }
 
     try {
-        // Préparer la requête de paiement Yabeto
+
         const body = {
-            merchant_id: YABETOOPAY_MERCHANT_ID,
-            amount,
-            currency: "XAF",
-            customer_name: name,
-            customer_msisdn: msisdn,
-            provider,
-            description,
-            reference: `deblocage_${annonceId}_${Date.now()}`,
+            accountId: YABETOOPAY_MERCHANT_ID,
+            total: amount,
+            currency: "xaf",
+
+            successUrl: "https://chezmoi-app.com/payment-success",
+            cancelUrl: "https://chezmoi-app.com/payment-cancel",
+
+            metadata: {
+                annonceId: annonceId,
+                msisdn: msisdn
+            },
+
+            items: [
+                {
+                    productId: "deblocage_contact",
+                    quantity: 1,
+                    price: amount,
+                    productName: description || "Déblocage contact propriétaire"
+                }
+            ]
         };
 
-        // Utiliser la bonne URL sandbox
-        const response = await fetch("https://pay.sandbox.yabetoopay.com/pay", {
+        const response = await fetch("https://buy.api.yabetoopay.com/v1/sessions", {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
@@ -645,25 +657,36 @@ app.post("/api/payment/deblocage", async (req, res) => {
             body: JSON.stringify(body)
         });
 
-        const text = await response.text();
-        console.log("Réponse Yabetoo sandbox :", text);
+        const data = await response.json();
 
-        const data = JSON.parse(text);
+        console.log("Réponse Yabeto :", data);
 
-        if (data.status === "success" && data.payment_url) {
+        if (data.checkoutUrl) {
+
             res.json({
                 message: "Paiement initié",
-                paymentId: data.payment_id,
-                redirectUrl: data.payment_url
+                redirectUrl: data.checkoutUrl
             });
+
         } else {
-            res.status(400).json({ message: "Erreur paiement", details: data });
+
+            res.status(400).json({
+                message: "Erreur paiement",
+                details: data
+            });
+
         }
 
     } catch (error) {
+
         console.error("Erreur paiement debloquage :", error);
-        res.status(500).json({ message: error.message });
+
+        res.status(500).json({
+            message: error.message
+        });
+
     }
+
 });
 
 // ===========================================
