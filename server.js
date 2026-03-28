@@ -8,6 +8,11 @@ const cors = require("cors");
 const admin = require("firebase-admin");
 const fetch = require("node-fetch"); // pour Imgbb
 const nodemailer = require("nodemailer"); // pour email
+const webhookSecret = process.env.YABETOO_WEBHOOK_SECRET; // pour le webhook
+const YABETOOPAY_API_KEY = process.env.YABETOOPAY_API_KEY; // la clé api
+const YABETOOPAY_SECRET_KEY = process.env.YABETOOPAY_SECRET_KEY; // la clé api secrete
+const YABETOOPAY_MERCHANT_ID = process.env.YABETOOPAY_MERCHANT_ID; // la clé merchant
+
 
 /* ===================================================== */
 /* ================= INITIALISATION ==================== */
@@ -605,6 +610,72 @@ app.post("/api/idea", async (req, res) => {
         res.status(500).json({ message: "Impossible d'envoyer l'idée" });
     }
 
+});
+
+// ==================================================
+// ==================== PAIEMENT DÉBLOCAGE ====================
+// ====================================================
+app.post("/api/payment/deblocage", async (req, res) => {
+    const { name, msisdn, provider, amount, annonceId, description } = req.body;
+
+    if (!name || !msisdn || !provider || !amount || !annonceId) {
+        return res.status(400).json({ message: "Champs obligatoires manquants" });
+    }
+
+    try {
+        // Préparer la requête de paiement Yabeto
+        const body = {
+            merchant_id: YABETOOPAY_MERCHANT_ID,
+            api_key: YABETOOPAY_API_KEY,
+            secret_key: YABETOOPAY_SECRET_KEY,
+            amount,
+            currency: "XAF",
+            customer_name: name,
+            customer_msisdn: msisdn,
+            provider,
+            description,
+            reference: `deblocage_${annonceId}_${Date.now()}`,
+            callback_url: "https://chezmoi-backend.onrender.com/webhook/yabetoo"
+        };
+
+        const response = await fetch("https://api.yabetoo.com/v1/payments", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body)
+        });
+
+        const data = await response.json();
+
+        if (data.status === "success") {
+            res.json({ message: "Paiement initié", paymentId: data.payment_id, redirectUrl: data.payment_url });
+        } else {
+            res.status(400).json({ message: "Erreur paiement", details: data });
+        }
+
+    } catch (error) {
+        console.error("Erreur paiement debloquage :", error);
+        res.status(500).json({ message: error.message });
+    }
+});
+
+// ===========================================
+// ================= WEBHOOK YABETOO =================
+// ===============================================
+
+app.post("/webhook/yabetoo", express.json(), (req, res) => {
+    const event = req.body;
+    console.log("Webhook reçu :", event);
+
+    if (event.type === "intent.succeeded") {
+        console.log("Paiement réussi pour :", event.data.reference);
+        // Pour l'instant, juste log. On implémentera le déblocage contact après.
+    } else if (event.type === "intent.failed") {
+        console.log("Paiement échoué :", event.data.reference);
+    } else if (event.type === "intent.canceled") {
+        console.log("Paiement annulé :", event.data.reference);
+    }
+
+    res.status(200).send("ok");
 });
 
 /* ===================================================== */
