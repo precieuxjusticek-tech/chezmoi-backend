@@ -638,13 +638,16 @@ app.post("/api/payment/deblocage", async (req, res) => {
             callback_url: "https://chezmoi-backend.onrender.com/webhook/yabetoo"
         };
 
-        const response = await fetch("https://api.yabetoo.com/v1/payments", {
+        const response = await fetch("https://api.yabetoo.com/api/v1/pay", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body)
         });
 
-        const data = await response.json();
+        const text = await response.text();
+        console.log("Réponse Yabeto :", text);
+
+        const data = JSON.parse(text);
 
         if (data.status === "success") {
             res.json({ message: "Paiement initié", paymentId: data.payment_id, redirectUrl: data.payment_url });
