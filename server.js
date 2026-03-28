@@ -616,41 +616,37 @@ app.post("/api/idea", async (req, res) => {
 // ==================== PAIEMENT DÉBLOCAGE ====================
 // ====================================================
 app.post("/api/payment/deblocage", async (req, res) => {
-    const { name, msisdn, provider, amount, annonceId, description } = req.body;
+    const { name, msisdn, amount, annonceId, description } = req.body;
 
-    if (!name || !msisdn || !provider || !amount || !annonceId) {
+    if (!name || !msisdn || !amount || !annonceId) {
         return res.status(400).json({ message: "Champs obligatoires manquants" });
     }
 
     try {
-        // Préparer la requête de paiement Yabeto
         const body = {
-            merchant_id: YABETOOPAY_MERCHANT_ID,
-            api_key: YABETOOPAY_API_KEY,
-            secret_key: YABETOOPAY_SECRET_KEY,
             amount,
             currency: "XAF",
             customer_name: name,
             customer_msisdn: msisdn,
-            provider,
-            description,
-            reference: `deblocage_${annonceId}_${Date.now()}`,
-            callback_url: "https://chezmoi-backend.onrender.com/webhook/yabetoo"
+            description: description || `Paiement déblocage ${annonceId}`,
+            success_url: `https://chezmoi.com/success?annonce=${annonceId}`,
+            cancel_url: `https://chezmoi.com/cancel?annonce=${annonceId}`,
         };
 
-        const response = await fetch("https://api.yabetoo.com/api/v1/pay", {
+        const response = await fetch("https://api.yabetoopay.com/v1/checkout-sessions", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${YABETOOPAY_SECRET_KEY}`
+            },
             body: JSON.stringify(body)
         });
 
-        const text = await response.text();
-        console.log("Réponse Yabeto :", text);
+        const data = await response.json();
+        console.log("Réponse Yabeto :", data);
 
-        const data = JSON.parse(text);
-
-        if (data.status === "success") {
-            res.json({ message: "Paiement initié", paymentId: data.payment_id, redirectUrl: data.payment_url });
+        if (data.payment_url) {
+            res.json({ message: "Paiement initié", redirectUrl: data.payment_url });
         } else {
             res.status(400).json({ message: "Erreur paiement", details: data });
         }
