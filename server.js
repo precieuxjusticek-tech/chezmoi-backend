@@ -23,6 +23,37 @@ app.use(express.json({ limit: "50mb" }));
 
 const PORT = process.env.PORT || 3000;
 
+const multer = require("multer");
+
+const path = require("path");
+const fs = require("fs");
+
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        const dir = "./uploads"; // dossier temporaire
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir);
+        cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+        const ext = path.extname(file.originalname);
+        cb(null, `${Date.now()}-${Math.round(Math.random()*1e9)}${ext}`);
+    }
+});
+
+// ================= CONFIG MULTER =================
+
+const upload = multer({
+    storage,
+    limits: { fileSize: 20 * 1024 * 1024 }, // max 20MB par fichier
+    fileFilter: (req, file, cb) => {
+        if(file.mimetype.startsWith("image/")){
+            cb(null, true);
+        } else {
+            cb(new Error("Seules les images sont autorisées"));
+        }
+    }
+});
+
 /* ===================================================== */
 /* ================= FIREBASE ADMIN ==================== */
 /* ===================================================== */
@@ -119,31 +150,57 @@ app.post("/api/password-reset", async (req, res) => {
 /* ===================================================== */
 /* ================= PUBLIER ANNONCE =================== */
 /* ===================================================== */
-app.post("/api/annonces", async (req, res) => {
+app.post("/api/annonces", upload.array("images", 15), async (req, res) => {
     try {
-        const { uid, titre, type_annonce, description, prix, ville, quartier, douche, contact, imagesBase64 } = req.body;
+        const { uid, titre, type_annonce, description, prix, ville, quartier, douche, contact } = req.body;
+        
+        const files = req.files;
+        const uploadedFilesPaths = []; // <-- tableau pour rollback
+
+        try {
+            await admin.auth().getUser(uid); // <-- vérifie si le uid existe
+        } catch {
+            return res.status(400).json({ message: "Utilisateur introuvable" });
+        }
 
         if (!uid || !titre || !type_annonce || !description || !prix || !ville || !quartier || !contact) {
             return res.status(400).json({ message: "Champs obligatoires manquants" });
         }
-        if (!imagesBase64 || imagesBase64.length === 0) {
+
+        if (Number(prix) <= 0) {
+            return res.status(400).json({ message: "Prix invalide" });
+        }
+
+        if (!files || files.length === 0) {
             return res.status(400).json({ message: "Au moins une image est requise" });
+        }
+
+        // Vérifie les formats d'image avant upload
+        const supportedFormats = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+        for (const file of files) {
+            if (!supportedFormats.includes(file.mimetype)) {
+                return res.status(400).json({ 
+                    message: `Le fichier "${file.originalname}" n'est pas supporté. Formats autorisés : JPEG, PNG, GIF, WEBP` 
+                });
+            }
         }
 
         const now = new Date();
 
         // Supprime annonces expirées
-        const expiredSnapshot = await db.collection("annonces").where("expireAt", "<=", admin.firestore.Timestamp.fromDate(now)).get();
+        const expiredSnapshot = await db.collection("annonces")
+            .where("expireAt", "<=", admin.firestore.Timestamp.fromDate(now))
+            .get();
+
         for (const doc of expiredSnapshot.docs) {
             const data = doc.data();
             if (data.imagesDeleteUrls) {
                 for (const deleteUrl of data.imagesDeleteUrls) {
-                    try { await fetch(deleteUrl, { method: "GET" }); } 
+                    try { await fetch(deleteUrl, { method: "DELETE" }); } 
                     catch(err){ console.error("Erreur suppression image Imgbb :", err); }
                 }
             }
 
-            // Supprimer favoris liés
             const favSnapshot = await db.collection("favorites")
                 .where("annonceId", "==", doc.id)
                 .get();
@@ -159,30 +216,43 @@ app.post("/api/annonces", async (req, res) => {
         const uploadedImages = [];
         const imagesDeleteUrls = [];
         const apiKey = process.env.IMGBB_API_KEY;
-        const expiration = 2592000; // 30 jours
+        const expiration = 2 * 60; // expire dans 2 minutes
+        for (const file of files) {
+            try {
+                const base64 = await fs.promises.readFile(file.path, { encoding: "base64" });
+                const formData = new URLSearchParams();
+                formData.append("image", base64);
+                formData.append("expiration", expiration);
 
-        for (const base64 of imagesBase64) {
-            const formData = new URLSearchParams();
-            formData.append("image", base64.replace(/^data:image\/\w+;base64,/, ""));
-            formData.append("expiration", expiration);
+                const response = await fetch(`https://api.imgbb.com/1/upload?key=${apiKey}`, {
+                    method: "POST",
+                    body: formData
+                });
 
-            const response = await fetch(`https://api.imgbb.com/1/upload?key=${apiKey}`, {
-                method: "POST",
-                body: formData
-            });
+                const data = await response.json();
 
-            const data = await response.json();
-            if (data.success) {
+                if (!data.success) throw new Error(`L'image "${file.originalname}" a échoué à l'upload`);
+
                 uploadedImages.push(data.data.url);
                 imagesDeleteUrls.push(data.data.delete_url);
-            } else {
-                console.error("Erreur Imgbb :", data);
+
+                uploadedFilesPaths.push(file.path); // <-- sauvegarde pour rollback
+
+            } catch (err) {
+                // rollback: supprime tous les fichiers déjà uploadés sur Imgbb
+                for (const url of imagesDeleteUrls) {
+                    try { await fetch(url, { method: "DELETE" }); } 
+                    catch(e){ console.error("Erreur suppression Imgbb:", e); }
+                }
+                // supprime tous les fichiers temporaires
+                for (const pathFile of uploadedFilesPaths) {
+                    if (fs.existsSync(pathFile)) fs.unlinkSync(pathFile);
+                }
+                return res.status(500).json({ message: err.message });
             }
         }
 
-        // Crée l'annonce Firebase avec Timestamp
-        const expireAt = admin.firestore.Timestamp.fromDate(new Date(Date.now() + 30*24*60*60*1000));
-
+        const expireAt = admin.firestore.Timestamp.fromDate(new Date(Date.now() + 2*60*1000)); // expire dans 2 minutes
         const annonceRef = await db.collection("annonces").add({
             uid,
             titre,
@@ -199,7 +269,14 @@ app.post("/api/annonces", async (req, res) => {
             expireAt
         });
 
-        res.status(201).json({ message: "Annonce publiée avec succès !", id: annonceRef.id });
+        for (const pathFile of uploadedFilesPaths) {
+            if (fs.existsSync(pathFile)) fs.unlinkSync(pathFile);
+        }
+
+        res.status(201).json({ 
+            message: "Annonce publiée avec succès !", 
+            id: annonceRef.id
+        });
 
     } catch (err) {
         console.error("Erreur backend annonces :", err);
@@ -630,8 +707,8 @@ app.post("/api/payment/deblocage", async (req, res) => {
             total: amount,
             currency: "xaf",
 
-            successUrl: "https://chezmoi-app.com/payment-success",
-            cancelUrl: "https://chezmoi-app.com/payment-cancel",
+            successUrl: `https://chezmoi-backend.onrender.com/api/annonces/${annonceId}`,
+            cancelUrl: `https://chezmoi-backend.onrender.com/api/annonces/${annonceId}`,
 
             metadata: {
                 annonceId: annonceId,
@@ -644,6 +721,12 @@ app.post("/api/payment/deblocage", async (req, res) => {
                     quantity: 1,
                     price: amount,
                     productName: description || "Déblocage contact propriétaire"
+                },
+                {
+                    productId: "frais_yabetoopay",
+                    quantity: 1,
+                    price: 60, // frais que tu veux montrer
+                    productName: "Frais de traitement Yabetoopay"
                 }
             ]
         };
