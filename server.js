@@ -716,25 +716,36 @@ async function rollbackAnnonce(annonceRef, annonceData) {
 // ===========================================
 
 app.post("/webhook/yabetoo", express.json(), async (req, res) => {
-    const event = req.body;
-    console.log("Webhook reçu :", event);
-
-    const signature = req.headers['x-yabetoo-signature']; // selon doc Yabeto
-    if (signature !== webhookSecret) {
-        return res.status(401).send("Signature invalide");
-    }
-
     try {
-        const ref = event.data.reference; // référence envoyée lors de la création du paiement
+        console.log("=== Webhook Yabetoo reçu ===");
+        console.log("Headers :", req.headers);
+        console.log("Body brut :", req.body);
 
-        // On récupère l'annonce correspondante via la reference
+        const signature = req.headers['x-yabetoo-signature'];
+        console.log("Signature reçue :", signature);
+
+        // Vérification signature
+        if (signature !== webhookSecret) {
+            console.warn("⚠ Signature invalide !");
+            return res.status(401).send("Signature invalide");
+        }
+
+        const event = req.body;
+        const ref = event?.data?.reference;
+        if (!ref) {
+            console.warn("⚠ Pas de référence dans l'événement !");
+            return res.status(400).send("Référence manquante");
+        }
+        console.log("Référence du paiement :", ref);
+
+        // Recherche de l'annonce correspondante
         const annonceQuery = await db.collection("annonces")
             .where("paymentReference", "==", ref)
             .limit(1)
             .get();
 
         if (annonceQuery.empty) {
-            console.log("Annonce non trouvée pour la référence :", ref);
+            console.warn("⚠ Annonce non trouvée pour la référence :", ref);
             return res.status(404).send("Annonce non trouvée");
         }
 
@@ -742,26 +753,30 @@ app.post("/webhook/yabetoo", express.json(), async (req, res) => {
         const annonceRef = annonceDoc.ref;
         const annonceData = annonceDoc.data();
 
-        // Gestion des types d'événement Yabetoo
-        if (event.type === "intent.succeeded") {
-            console.log("Paiement réussi pour :", ref);
+        console.log("Annonce trouvée :", annonceRef.id);
 
-            // Mise à jour de l'annonce en 'published'
-            await annonceRef.update({
-                statut: "published",
-                paiementEffectue: true,
-                updatedAt: admin.firestore.Timestamp.now()
-            });
+        // Gestion du type d'événement
+        switch (event.type) {
+            case "intent.succeeded":
+                console.log("✅ Paiement réussi pour :", ref);
+                await annonceRef.update({
+                    statut: "published",
+                    paiementEffectue: true,
+                    updatedAt: admin.firestore.Timestamp.now()
+                });
+                console.log("Annonce mise à jour en 'published'");
+                break;
 
-        } else if (
-            event.type === "intent.failed" || 
-            event.type === "intent.canceled" || 
-            event.type === "intent.expired"  // <-- paiement expiré après 30 min
-        ) {
-            console.log("Paiement échoué, annulé ou expiré pour :", ref);
+            case "intent.failed":
+            case "intent.canceled":
+            case "intent.expired":
+                console.log("paiement échoué / annulé / expiré pour :", ref);
+                await rollbackAnnonce(annonceRef, annonceData);
+                console.log("Rollback effectué pour l'annonce :", annonceRef.id);
+                break;
 
-            // On appelle la fonction de rollback pour supprimer images et Firestore
-            await rollbackAnnonce(annonceRef, annonceData);
+            default:
+                console.log("Événement inconnu :", event.type);
         }
 
         res.status(200).send("ok");
