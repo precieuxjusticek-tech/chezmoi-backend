@@ -618,56 +618,34 @@ app.post("/api/idea", async (req, res) => {
 // =====================================================
 app.post("/api/create-annonce-payment", async (req, res) => {
     try {
-        const { uid, titre, packSelectionne } = req.body;
+        const { uid, annonceId, titre, packSelectionne } = req.body;
 
-        if (!uid || !titre) {
-            return res.status(400).json({ message: "Informations manquantes : uid ou titre" });
+        if (!uid || !titre || !annonceId) {
+            return res.status(400).json({ message: "Informations manquantes" });
         }
 
-        // Prix de base
-        const prixBaseAnnonce = {
-            location: 1000,
-            vente: 3000
-        };
-
+        const prixBaseAnnonce = { location: 1000, vente: 3000 };
         if (!prixBaseAnnonce[titre.toLowerCase()]) {
             return res.status(400).json({ message: "Type d'annonce invalide" });
         }
 
-        // Calcul total
         const packPrix = Number(packSelectionne || 0) * 200;
         const prixReel = prixBaseAnnonce[titre.toLowerCase()] + packPrix;
-
-        // Frais Yabeto 6%
-        const frais = Math.ceil(prixReel * 0.06); // arrondi à l'entier supérieur
+        const frais = Math.ceil(prixReel * 0.06);
         const totalPrix = prixReel + frais;
 
-        // Préparation du corps pour Yabetoo avec **prix et frais séparés**
         const body = {
             accountId: YABETOOPAY_MERCHANT_ID,
             total: totalPrix,
             currency: "xaf",
             successUrl: "http://127.0.0.1:5500/#home",
             cancelUrl: "http://127.0.0.1:5500/#ajouter",
-            metadata: {
-                type: "publication_annonce",
-                uid
-            },
+            metadata: { type: "publication_annonce", uid, annonceId },
             items: [
-                {
-                    productId: "publication_annonce",
-                    productName: "Prix réel de l'annonce",
-                    quantity: 1,
-                    price: prixReel
-                },
-                {
-                    productId: "frais_yabetoopay",
-                    productName: "Frais de traitement Yabeto",
-                    quantity: 1,
-                    price: frais
-                }
+                { productId: "publication_annonce", productName: "Prix réel", quantity: 1, price: prixReel },
+                { productId: "frais_yabetoopay", productName: "Frais Yabeto", quantity: 1, price: frais }
             ],
-            expiresAt: Math.floor(Date.now() / 1000) + 30 * 60 // 30 minutes
+            expiresAt: Math.floor(Date.now() / 1000) + 30 * 60
         };
 
         const response = await fetch("https://buy.api.yabetoopay.com/v1/sessions", {
@@ -680,14 +658,16 @@ app.post("/api/create-annonce-payment", async (req, res) => {
         });
 
         const data = await response.json();
+        if (!response.ok) return res.status(400).json({ message: "Erreur Yabeto", details: data });
 
-        if (!response.ok) {
-            return res.status(400).json({ message: "Erreur Yabeto", details: data });
-        }
+        // ← ENREGISTRER LA REFERENCE DANS L'ANNONCE
+        await db.collection("annonces").doc(annonceId).update({
+            paymentReference: data.id // <- sessionId Yabeto
+        });
 
         res.json({
             sessionId: data.id,
-            redirectUrl: data.url, // <-- URL pour redirection frontend
+            redirectUrl: data.url,
             montant: totalPrix
         });
 
