@@ -636,21 +636,18 @@ app.post("/api/create-annonce-payment", async (req, res) => {
 
         // Calcul total
         const packPrix = Number(packSelectionne || 0) * 200;
-        let totalPrix = prixBaseAnnonce[titre.toLowerCase()] + packPrix;
+        const prixReel = prixBaseAnnonce[titre.toLowerCase()] + packPrix;
 
         // Frais Yabeto 6%
-        totalPrix = totalPrix / (1 - 0.06);
+        const frais = Math.ceil(prixReel * 0.06); // arrondi à l'entier supérieur
+        const totalPrix = prixReel + frais;
 
-        // Arrondi au multiple de 5 et conversion en entier
-        totalPrix = Math.ceil(totalPrix / 5) * 5;
-        totalPrix = Math.round(totalPrix);
-
-        // Préparation du corps pour Yabetoo avec expiration à 30 minutes
+        // Préparation du corps pour Yabetoo avec **prix et frais séparés**
         const body = {
             accountId: YABETOOPAY_MERCHANT_ID,
             total: totalPrix,
             currency: "xaf",
-            successUrl: "http://127.0.0.1:5500/#home",     // ← redirige vers home si succès
+            successUrl: "http://127.0.0.1:5500/#home",
             cancelUrl: "http://127.0.0.1:5500/#ajouter",
             metadata: {
                 type: "publication_annonce",
@@ -659,9 +656,15 @@ app.post("/api/create-annonce-payment", async (req, res) => {
             items: [
                 {
                     productId: "publication_annonce",
-                    productName: "Publication annonce ChezMoi",
+                    productName: "Prix réel de l'annonce",
                     quantity: 1,
-                    price: totalPrix
+                    price: prixReel
+                },
+                {
+                    productId: "frais_yabetoopay",
+                    productName: "Frais de traitement Yabeto",
+                    quantity: 1,
+                    price: frais
                 }
             ],
             expiresAt: Math.floor(Date.now() / 1000) + 30 * 60 // 30 minutes
@@ -677,7 +680,6 @@ app.post("/api/create-annonce-payment", async (req, res) => {
         });
 
         const data = await response.json();
-        console.log("Yabeto session response:", data);
 
         if (!response.ok) {
             return res.status(400).json({ message: "Erreur Yabeto", details: data });
@@ -685,7 +687,7 @@ app.post("/api/create-annonce-payment", async (req, res) => {
 
         res.json({
             sessionId: data.id,
-            paymentUrl: `https://pay.yabetoopay.com/session/${data.id}`,
+            redirectUrl: data.url, // <-- URL pour redirection frontend
             montant: totalPrix
         });
 
