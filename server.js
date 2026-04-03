@@ -618,10 +618,10 @@ app.post("/api/idea", async (req, res) => {
 // =====================================================
 app.post("/api/create-annonce-payment", async (req, res) => {
     try {
-        const { uid, type_annonce, packSelectionne } = req.body;
+        const { uid, titre, packSelectionne } = req.body;
 
-        if (!uid || !type_annonce) {
-            return res.status(400).json({ message: "Informations manquantes : uid ou type_annonce" });
+        if (!uid || !titre) {
+            return res.status(400).json({ message: "Informations manquantes : uid ou titre" });
         }
 
         // Prix de base
@@ -630,13 +630,13 @@ app.post("/api/create-annonce-payment", async (req, res) => {
             vente: 3000
         };
 
-        if (!prixBaseAnnonce[type_annonce.toLowerCase()]) {
+        if (!prixBaseAnnonce[titre.toLowerCase()]) {
             return res.status(400).json({ message: "Type d'annonce invalide" });
         }
 
         // Calcul total
         const packPrix = Number(packSelectionne || 0) * 200;
-        let totalPrix = prixBaseAnnonce[type_annonce.toLowerCase()] + packPrix;
+        let totalPrix = prixBaseAnnonce[titre.toLowerCase()] + packPrix;
 
         // Frais Yabeto 6%
         totalPrix = totalPrix / (1 - 0.06);
