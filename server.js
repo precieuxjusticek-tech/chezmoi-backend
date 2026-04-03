@@ -150,18 +150,9 @@ app.post("/api/password-reset", async (req, res) => {
 /* ===================================================== */
 /* ================= PUBLIER ANNONCE =================== */
 /* ===================================================== */
-app.post("/api/annonces", upload.array("images", 15), async (req, res) => {
+app.post("/api/annonces", async (req, res) => {
     try {
-        const { uid, titre, type_annonce, description, prix, ville, quartier, douche, contact } = req.body;
-        
-        const files = req.files;
-        const uploadedFilesPaths = []; // <-- tableau pour rollback
-
-        try {
-            await admin.auth().getUser(uid); // <-- vérifie si le uid existe
-        } catch {
-            return res.status(400).json({ message: "Utilisateur introuvable" });
-        }
+        const { uid, titre, type_annonce, description, prix, ville, quartier, douche, contact, packSelectionne } = req.body;
 
         if (!uid || !titre || !type_annonce || !description || !prix || !ville || !quartier || !contact) {
             return res.status(400).json({ message: "Champs obligatoires manquants" });
@@ -171,111 +162,43 @@ app.post("/api/annonces", upload.array("images", 15), async (req, res) => {
             return res.status(400).json({ message: "Prix invalide" });
         }
 
-        if (!files || files.length === 0) {
-            return res.status(400).json({ message: "Au moins une image est requise" });
-        }
+        try { await admin.auth().getUser(uid); } 
+        catch { return res.status(400).json({ message: "Utilisateur introuvable" }); }
 
-        // Vérifie les formats d'image avant upload
-        const supportedFormats = ["image/jpeg", "image/png", "image/gif", "image/webp"];
-        for (const file of files) {
-            if (!supportedFormats.includes(file.mimetype)) {
-                return res.status(400).json({ 
-                    message: `Le fichier "${file.originalname}" n'est pas supporté. Formats autorisés : JPEG, PNG, GIF, WEBP` 
-                });
-            }
-        }
+        // ======= CALCUL PRIX FINAL =======
+        const prixBaseAnnonce = { location: 1000, vente: 3000 };
+        const packPrix = Number(packSelectionne || 0) * 200;
+        let totalPrix = (prixBaseAnnonce[type_annonce.toLowerCase()] || 0) + packPrix;
+        totalPrix = totalPrix / (1 - 0.06);
+        totalPrix = Math.ceil(totalPrix / 5) * 5;
+        totalPrix = Math.round(totalPrix);
 
+        // Crée annonce avec statut "pending_payment"
         const now = new Date();
-
-        // Supprime annonces expirées
-        const expiredSnapshot = await db.collection("annonces")
-            .where("expireAt", "<=", admin.firestore.Timestamp.fromDate(now))
-            .get();
-
-        for (const doc of expiredSnapshot.docs) {
-            const data = doc.data();
-            if (data.imagesDeleteUrls) {
-                for (const deleteUrl of data.imagesDeleteUrls) {
-                    try { await fetch(deleteUrl, { method: "DELETE" }); } 
-                    catch(err){ console.error("Erreur suppression image Imgbb :", err); }
-                }
-            }
-
-            const favSnapshot = await db.collection("favorites")
-                .where("annonceId", "==", doc.id)
-                .get();
-
-            for (const favDoc of favSnapshot.docs) {
-                await favDoc.ref.delete();
-            }
-
-            await doc.ref.delete();
-        }
-
-        // Upload images sur Imgbb
-        const uploadedImages = [];
-        const imagesDeleteUrls = [];
-        const apiKey = process.env.IMGBB_API_KEY;
-        const expiration = 2 * 60; // expire dans 2 minutes
-        for (const file of files) {
-            try {
-                const base64 = await fs.promises.readFile(file.path, { encoding: "base64" });
-                const formData = new URLSearchParams();
-                formData.append("image", base64);
-                formData.append("expiration", expiration);
-
-                const response = await fetch(`https://api.imgbb.com/1/upload?key=${apiKey}`, {
-                    method: "POST",
-                    body: formData
-                });
-
-                const data = await response.json();
-
-                if (!data.success) throw new Error(`L'image "${file.originalname}" a échoué à l'upload`);
-
-                uploadedImages.push(data.data.url);
-                imagesDeleteUrls.push(data.data.delete_url);
-
-                uploadedFilesPaths.push(file.path); // <-- sauvegarde pour rollback
-
-            } catch (err) {
-                // rollback: supprime tous les fichiers déjà uploadés sur Imgbb
-                for (const url of imagesDeleteUrls) {
-                    try { await fetch(url, { method: "DELETE" }); } 
-                    catch(e){ console.error("Erreur suppression Imgbb:", e); }
-                }
-                // supprime tous les fichiers temporaires
-                for (const pathFile of uploadedFilesPaths) {
-                    if (fs.existsSync(pathFile)) fs.unlinkSync(pathFile);
-                }
-                return res.status(500).json({ message: err.message });
-            }
-        }
-
-        const expireAt = admin.firestore.Timestamp.fromDate(new Date(Date.now() + 2*60*1000)); // expire dans 2 minutes
+        const expireAt = admin.firestore.Timestamp.fromDate(new Date(Date.now() + 2*60*1000)); // 2min
         const annonceRef = await db.collection("annonces").add({
             uid,
             titre,
             type_annonce,
             description,
             prix,
+            prixAPayer: totalPrix,
             ville,
             quartier,
             douche,
             contact,
-            images: uploadedImages,
-            imagesDeleteUrls,
+            images: [],            // images uploadées après paiement
+            imagesDeleteUrls: [],  // delete URLs Imgbb
+            packSelectionne: Number(packSelectionne || 0),
+            statut: "pending_payment",
             createdAt: admin.firestore.Timestamp.fromDate(now),
             expireAt
         });
 
-        for (const pathFile of uploadedFilesPaths) {
-            if (fs.existsSync(pathFile)) fs.unlinkSync(pathFile);
-        }
-
         res.status(201).json({ 
-            message: "Annonce publiée avec succès !", 
-            id: annonceRef.id
+            message: "Annonce créée, paiement requis", 
+            id: annonceRef.id,
+            prixAPayer: totalPrix
         });
 
     } catch (err) {
@@ -375,6 +298,7 @@ app.get("/api/annonces/user/:uid", async (req, res) => {
         const snapshot = await db.collection("annonces")
             .where("uid", "==", uid)       // filtrer par utilisateur
             .where("expireAt", ">", now)   // ne prendre que les annonces valides
+            .where("statut", "==", "published") // <-- seulement les annonces payées
             .get();
 
         const annonces = snapshot.docs.map(doc => ({
@@ -612,19 +536,19 @@ app.post("/api/report", async (req, res) => {
             to: process.env.GMAIL_USER,          
             subject: `Signalement: ${sujet}`,
             text: 
-`Nom: ${nom}
-Email: ${email}
+            `Nom: ${nom}
+            Email: ${email}
 
-Message:
-${message}
+            Message:
+            ${message}
 
-Annonce concernée:
-- ID: ${annonce.id}
-- Titre: ${annonce.titre}
-- Type: ${annonce.type}
-- Ville: ${annonce.ville}
-- Quartier: ${annonce.quartier}
-- Prix: ${annonce.prix} FCFA`
+            Annonce concernée:
+            - ID: ${annonce.id}
+            - Titre: ${annonce.titre}
+            - Type: ${annonce.type}
+            - Ville: ${annonce.ville}
+            - Quartier: ${annonce.quartier}
+            - Prix: ${annonce.prix} FCFA`
         };
 
         // Envoi du mail
@@ -687,6 +611,183 @@ app.post("/api/idea", async (req, res) => {
         res.status(500).json({ message: "Impossible d'envoyer l'idée" });
     }
 
+});
+
+// =====================================================
+// ============= CREER SESSION PAIEMENT ANNONCE ========
+// =====================================================
+app.post("/api/create-annonce-payment", async (req, res) => {
+    try {
+        const { uid, type_annonce, packSelectionne } = req.body;
+
+        if (!uid || !type_annonce) {
+            return res.status(400).json({ message: "Informations manquantes : uid ou type_annonce" });
+        }
+
+        // Prix de base
+        const prixBaseAnnonce = {
+            location: 1000,
+            vente: 3000
+        };
+
+        if (!prixBaseAnnonce[type_annonce.toLowerCase()]) {
+            return res.status(400).json({ message: "Type d'annonce invalide" });
+        }
+
+        // Calcul total
+        const packPrix = Number(packSelectionne || 0) * 200;
+        let totalPrix = prixBaseAnnonce[type_annonce.toLowerCase()] + packPrix;
+
+        // Frais Yabeto 6%
+        totalPrix = totalPrix / (1 - 0.06);
+
+        // Arrondi au multiple de 5 et conversion en entier
+        totalPrix = Math.ceil(totalPrix / 5) * 5;
+        totalPrix = Math.round(totalPrix);
+
+        // Préparation du corps pour Yabetoo avec expiration à 30 minutes
+        const body = {
+            accountId: YABETOOPAY_MERCHANT_ID,
+            total: totalPrix,
+            currency: "xaf",
+            successUrl: "http://127.0.0.1:5500/#home",     // ← redirige vers home si succès
+            cancelUrl: "http://127.0.0.1:5500/#ajouter",
+            metadata: {
+                type: "publication_annonce",
+                uid
+            },
+            items: [
+                {
+                    productId: "publication_annonce",
+                    productName: "Publication annonce ChezMoi",
+                    quantity: 1,
+                    price: totalPrix
+                }
+            ],
+            expiresAt: Math.floor(Date.now() / 1000) + 30 * 60 // 30 minutes
+        };
+
+        const response = await fetch("https://buy.api.yabetoopay.com/v1/sessions", {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${YABETOOPAY_SECRET_KEY}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+        });
+
+        const data = await response.json();
+        console.log("Yabeto session response:", data);
+
+        if (!response.ok) {
+            return res.status(400).json({ message: "Erreur Yabeto", details: data });
+        }
+
+        res.json({
+            sessionId: data.id,
+            paymentUrl: `https://pay.yabetoopay.com/session/${data.id}`,
+            montant: totalPrix
+        });
+
+    } catch (error) {
+        console.error("Erreur création paiement :", error);
+        res.status(500).json({ message: "Erreur serveur paiement", error: error.message });
+    }
+});
+
+// =====================================
+// == POUR LA SUPPRESSION APRES LE DELAI DE 30 MIN
+// =====================================
+async function rollbackAnnonce(annonceRef, annonceData) {
+    try {
+        // Supprimer images Imgbb
+        if (annonceData.imagesDeleteUrls && annonceData.imagesDeleteUrls.length > 0) {
+            for (const deleteUrl of annonceData.imagesDeleteUrls) {
+                try {
+                    await fetch(deleteUrl, { method: "DELETE" });
+                } catch (err) {
+                    console.error("Erreur suppression image Imgbb :", err);
+                }
+            }
+        }
+
+        // Supprimer favoris liés à cette annonce
+        const favSnapshot = await db.collection("favorites")
+            .where("annonceId", "==", annonceRef.id)
+            .get();
+
+        for (const doc of favSnapshot.docs) {
+            await doc.ref.delete();
+        }
+
+        // Supprimer annonce Firestore
+        await annonceRef.delete();
+        console.log("Annonce supprimée (rollback) :", annonceRef.id);
+
+    } catch (err) {
+        console.error("Erreur lors du rollback de l'annonce :", err);
+    }
+}
+
+// ===========================================
+// ================= WEBHOOK YABETOO =================
+// ===========================================
+
+app.post("/webhook/yabetoo", express.json(), async (req, res) => {
+    const event = req.body;
+    console.log("Webhook reçu :", event);
+
+    const signature = req.headers['x-yabetoo-signature']; // selon doc Yabeto
+    if (signature !== webhookSecret) {
+        return res.status(401).send("Signature invalide");
+    }
+
+    try {
+        const ref = event.data.reference; // référence envoyée lors de la création du paiement
+
+        // On récupère l'annonce correspondante via la reference
+        const annonceQuery = await db.collection("annonces")
+            .where("paymentReference", "==", ref)
+            .limit(1)
+            .get();
+
+        if (annonceQuery.empty) {
+            console.log("Annonce non trouvée pour la référence :", ref);
+            return res.status(404).send("Annonce non trouvée");
+        }
+
+        const annonceDoc = annonceQuery.docs[0];
+        const annonceRef = annonceDoc.ref;
+        const annonceData = annonceDoc.data();
+
+        // Gestion des types d'événement Yabetoo
+        if (event.type === "intent.succeeded") {
+            console.log("Paiement réussi pour :", ref);
+
+            // Mise à jour de l'annonce en 'published'
+            await annonceRef.update({
+                statut: "published",
+                paiementEffectue: true,
+                updatedAt: admin.firestore.Timestamp.now()
+            });
+
+        } else if (
+            event.type === "intent.failed" || 
+            event.type === "intent.canceled" || 
+            event.type === "intent.expired"  // <-- paiement expiré après 30 min
+        ) {
+            console.log("Paiement échoué, annulé ou expiré pour :", ref);
+
+            // On appelle la fonction de rollback pour supprimer images et Firestore
+            await rollbackAnnonce(annonceRef, annonceData);
+        }
+
+        res.status(200).send("ok");
+
+    } catch (err) {
+        console.error("Erreur webhook Yabetoo :", err);
+        res.status(500).send("Erreur serveur");
+    }
 });
 
 // ==================================================
@@ -764,26 +865,6 @@ app.post("/api/payment/deblocage", async (req, res) => {
 
     }
 
-});
-
-// ===========================================
-// ================= WEBHOOK YABETOO =================
-// ===============================================
-
-app.post("/webhook/yabetoo", express.json(), (req, res) => {
-    const event = req.body;
-    console.log("Webhook reçu :", event);
-
-    if (event.type === "intent.succeeded") {
-        console.log("Paiement réussi pour :", event.data.reference);
-        // Pour l'instant, juste log. On implémentera le déblocage contact après.
-    } else if (event.type === "intent.failed") {
-        console.log("Paiement échoué :", event.data.reference);
-    } else if (event.type === "intent.canceled") {
-        console.log("Paiement annulé :", event.data.reference);
-    }
-
-    res.status(200).send("ok");
 });
 
 /* ===================================================== */
