@@ -724,6 +724,7 @@ async function rollbackAnnonce(annonceRef, annonceData) {
 // ==================== WEBHOOK YABETOO ====================
 // =========================================================
 app.post("/webhook/yabetoo", express.json({ type: "application/json" }), async (req, res) => {
+    
     try {
         console.log("=== Webhook Yabetoo reçu ===");
         console.log("Headers :", req.headers);
