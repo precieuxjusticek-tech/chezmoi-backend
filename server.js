@@ -723,26 +723,29 @@ app.post("/webhook/yabetoo", express.json(), async (req, res) => {
 
         const signature = req.headers['x-yabetoo-webhook-signature'];
         console.log("Signature reçue :", signature);
+        console.log("Webhook secret attendu :", webhookSecret);
 
-        // Vérification signature
         if (signature !== webhookSecret) {
             console.warn("⚠ Signature invalide !");
             return res.status(401).send("Signature invalide");
         }
 
         const event = req.body;
+        console.log("event.type:", event.type);
+        console.log("event.data:", event.data);
+
         const annonceId = event?.data?.intent?.metadata?.annonceId;
+        console.log("annonceId extrait:", annonceId);
 
         if (!annonceId) {
             console.warn("⚠ Pas d'annonceId dans l'événement !");
             return res.status(400).send("annonceId manquant");
         }
 
-        console.log("AnnonceId reçu :", annonceId);
-
-        // Recherche de l'annonce correspondante
         const annonceRef = db.collection("annonces").doc(annonceId);
         const annonceDoc = await annonceRef.get();
+
+        console.log("annonceDoc.exists:", annonceDoc.exists);
 
         if (!annonceDoc.exists) {
             console.warn("Annonce non trouvée :", annonceId);
@@ -751,12 +754,9 @@ app.post("/webhook/yabetoo", express.json(), async (req, res) => {
 
         const annonceData = annonceDoc.data();
 
-        console.log("Annonce trouvée :", annonceRef.id);
-
-        // Gestion du type d'événement
         switch (event.type) {
             case "intent.succeeded":
-                console.log("Paiement réussi pour annonce :", annonceId);
+                console.log("✅ Paiement réussi pour annonce :", annonceId);
                 await annonceRef.update({
                     statut: "published",
                     paiementEffectue: true,
@@ -768,9 +768,34 @@ app.post("/webhook/yabetoo", express.json(), async (req, res) => {
             case "intent.failed":
             case "intent.canceled":
             case "intent.expired":
-                console.log("paiement échoué / annulé / expiré pour annonce :", annonceId);
-                await rollbackAnnonce(annonceRef, annonceData);
-                console.log("Rollback effectué pour l'annonce :", annonceRef.id);
+                console.log("⚠ Paiement échoué / annulé / expiré pour annonce :", annonceId);
+                // rollback détaillé
+                try {
+                    if (annonceData.imagesDeleteUrls && annonceData.imagesDeleteUrls.length > 0) {
+                        for (const deleteUrl of annonceData.imagesDeleteUrls) {
+                            try {
+                                console.log("Suppression image Imgbb :", deleteUrl);
+                                await fetch(deleteUrl, { method: "DELETE" });
+                            } catch (err) {
+                                console.error("Erreur suppression image Imgbb :", err);
+                            }
+                        }
+                    }
+
+                    const favSnapshot = await db.collection("favorites")
+                        .where("annonceId", "==", annonceRef.id)
+                        .get();
+
+                    for (const doc of favSnapshot.docs) {
+                        console.log("Suppression favori :", doc.id);
+                        await doc.ref.delete();
+                    }
+
+                    await annonceRef.delete();
+                    console.log("Annonce supprimée (rollback) :", annonceRef.id);
+                } catch (err) {
+                    console.error("Erreur lors du rollback de l'annonce :", err);
+                }
                 break;
 
             default:
