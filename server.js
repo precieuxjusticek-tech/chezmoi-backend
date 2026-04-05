@@ -7,6 +7,7 @@ const express = require("express");
 const cors = require("cors");
 const admin = require("firebase-admin");
 const fetch = require("node-fetch"); // pour Imgbb
+const crypto = require("crypto");
 const nodemailer = require("nodemailer"); // pour email
 const webhookSecret = process.env.YABETOO_WEBHOOK_SECRET; // pour le webhook
 const YABETOOPAY_API_KEY = process.env.YABETOOPAY_API_KEY; // la clé api
@@ -677,15 +678,22 @@ app.post("/api/create-annonce-payment", async (req, res) => {
     }
 });
 
-// =====================================
-// == POUR LA SUPPRESSION APRES LE DELAI DE 30 MIN
-// =====================================
+const crypto = require("crypto");
+
+// ==================== ROLLBACK ANNOUNCE ====================
 async function rollbackAnnonce(annonceRef, annonceData) {
     try {
+        // Vérifie si l'annonce a déjà été payée
+        if (annonceData.paiementEffectue) {
+            console.log("⚠ Rollback ignoré : annonce déjà payée :", annonceRef.id);
+            return;
+        }
+
         // Supprimer images Imgbb
-        if (annonceData.imagesDeleteUrls && annonceData.imagesDeleteUrls.length > 0) {
+        if (annonceData.imagesDeleteUrls?.length) {
             for (const deleteUrl of annonceData.imagesDeleteUrls) {
                 try {
+                    console.log("Suppression image Imgbb :", deleteUrl);
                     await fetch(deleteUrl, { method: "DELETE" });
                 } catch (err) {
                     console.error("Erreur suppression image Imgbb :", err);
@@ -699,6 +707,7 @@ async function rollbackAnnonce(annonceRef, annonceData) {
             .get();
 
         for (const doc of favSnapshot.docs) {
+            console.log("Suppression favori :", doc.id);
             await doc.ref.delete();
         }
 
@@ -711,41 +720,41 @@ async function rollbackAnnonce(annonceRef, annonceData) {
     }
 }
 
-// ===========================================
-// ================= WEBHOOK YABETOO =================
-// ===========================================
-
-app.post("/webhook/yabetoo", express.json(), async (req, res) => {
+// =========================================================
+// ==================== WEBHOOK YABETOO ====================
+// =========================================================
+app.post("/webhook/yabetoo", express.json({ type: "application/json" }), async (req, res) => {
     try {
         console.log("=== Webhook Yabetoo reçu ===");
         console.log("Headers :", req.headers);
         console.log("Body brut :", req.body);
 
         const signature = req.headers['x-yabetoo-webhook-signature'];
-        console.log("Signature reçue :", signature);
-        console.log("Webhook secret attendu :", webhookSecret);
+        const timestamp = req.headers['x-yabetoo-webhook-timestamp'];
 
-        if (signature !== webhookSecret) {
+        // Vérifier la signature HMAC
+        const payload = timestamp + "." + JSON.stringify(req.body);
+        const expectedSignature = crypto.createHmac("sha256", webhookSecret)
+            .update(payload)
+            .digest("hex");
+
+        if (signature !== expectedSignature) {
             console.warn("⚠ Signature invalide !");
             return res.status(401).send("Signature invalide");
         }
 
         const event = req.body;
         console.log("event.type:", event.type);
-        console.log("event.data:", event.data);
 
         const annonceId = event?.data?.intent?.metadata?.annonceId;
-        console.log("annonceId extrait:", annonceId);
-
         if (!annonceId) {
             console.warn("⚠ Pas d'annonceId dans l'événement !");
             return res.status(400).send("annonceId manquant");
         }
+        console.log("annonceId extrait:", annonceId);
 
         const annonceRef = db.collection("annonces").doc(annonceId);
         const annonceDoc = await annonceRef.get();
-
-        console.log("annonceDoc.exists:", annonceDoc.exists);
 
         if (!annonceDoc.exists) {
             console.warn("Annonce non trouvée :", annonceId);
@@ -757,45 +766,23 @@ app.post("/webhook/yabetoo", express.json(), async (req, res) => {
         switch (event.type) {
             case "intent.succeeded":
                 console.log("✅ Paiement réussi pour annonce :", annonceId);
-                await annonceRef.update({
-                    statut: "published",
-                    paiementEffectue: true,
-                    updatedAt: admin.firestore.Timestamp.now()
-                });
-                console.log("Annonce mise à jour en 'published'");
+                if (!annonceData.paiementEffectue) {
+                    await annonceRef.update({
+                        statut: "published",
+                        paiementEffectue: true,
+                        updatedAt: admin.firestore.Timestamp.now()
+                    });
+                    console.log("Annonce mise à jour en 'published'");
+                } else {
+                    console.log("⚠ Annonce déjà payée, mise à jour ignorée :", annonceId);
+                }
                 break;
 
             case "intent.failed":
             case "intent.canceled":
             case "intent.expired":
                 console.log("⚠ Paiement échoué / annulé / expiré pour annonce :", annonceId);
-                // rollback détaillé
-                try {
-                    if (annonceData.imagesDeleteUrls && annonceData.imagesDeleteUrls.length > 0) {
-                        for (const deleteUrl of annonceData.imagesDeleteUrls) {
-                            try {
-                                console.log("Suppression image Imgbb :", deleteUrl);
-                                await fetch(deleteUrl, { method: "DELETE" });
-                            } catch (err) {
-                                console.error("Erreur suppression image Imgbb :", err);
-                            }
-                        }
-                    }
-
-                    const favSnapshot = await db.collection("favorites")
-                        .where("annonceId", "==", annonceRef.id)
-                        .get();
-
-                    for (const doc of favSnapshot.docs) {
-                        console.log("Suppression favori :", doc.id);
-                        await doc.ref.delete();
-                    }
-
-                    await annonceRef.delete();
-                    console.log("Annonce supprimée (rollback) :", annonceRef.id);
-                } catch (err) {
-                    console.error("Erreur lors du rollback de l'annonce :", err);
-                }
+                await rollbackAnnonce(annonceRef, annonceData);
                 break;
 
             default:
