@@ -151,7 +151,7 @@ app.post("/api/password-reset", async (req, res) => {
 /* ===================================================== */
 /* ================= PUBLIER ANNONCE =================== */
 /* ===================================================== */
-app.post("/api/annonces", async (req, res) => {
+app.post("/api/annonces", upload.array("images", 15), async (req, res) => {
     try {
         const { uid, titre, type_annonce, description, prix, ville, quartier, douche, contact, packSelectionne } = req.body;
 
@@ -195,6 +195,45 @@ app.post("/api/annonces", async (req, res) => {
             createdAt: admin.firestore.Timestamp.fromDate(now),
             expireAt
         });
+
+        // ===== UPLOAD DES IMAGES SUR IMGBB =====
+        const imagesUrls = [];
+        const imagesDeleteUrls = [];
+
+        if (req.files && req.files.length > 0) {
+            for (const file of req.files) {
+                const formData = new URLSearchParams();
+                formData.append("key", process.env.IMGBB_API_KEY);
+                formData.append("image", fs.readFileSync(file.path, { encoding: "base64" }));
+
+                try {
+                    const response = await fetch("https://api.imgbb.com/1/upload", {
+                        method: "POST",
+                        body: formData
+                    });
+
+                    const data = await response.json();
+                    if (data.success) {
+                        imagesUrls.push(data.data.url);
+                        imagesDeleteUrls.push(data.data.delete_url);
+                    } else {
+                        console.error("Erreur upload Imgbb :", data);
+                    }
+
+                    // supprime le fichier temporaire après upload
+                    fs.unlinkSync(file.path);
+
+                } catch (err) {
+                    console.error("Erreur fetch Imgbb :", err);
+                }
+            }
+
+            // mets à jour l'annonce Firestore avec les images uploadées
+            await annonceRef.update({
+                images: imagesUrls,
+                imagesDeleteUrls: imagesDeleteUrls
+            });
+        }
 
         res.status(201).json({ 
             message: "Annonce créée, paiement requis", 
