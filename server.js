@@ -721,7 +721,7 @@ app.post("/webhook/yabetoo", express.json(), async (req, res) => {
         console.log("Headers :", req.headers);
         console.log("Body brut :", req.body);
 
-        const signature = req.headers['x-yabetoo-signature'];
+        const signature = req.headers['x-yabetoo-webhook-signature'];
         console.log("Signature reçue :", signature);
 
         // Vérification signature
@@ -731,26 +731,24 @@ app.post("/webhook/yabetoo", express.json(), async (req, res) => {
         }
 
         const event = req.body;
-        const ref = event?.data?.reference;
-        if (!ref) {
-            console.warn("⚠ Pas de référence dans l'événement !");
-            return res.status(400).send("Référence manquante");
+        const annonceId = event?.data?.intent?.metadata?.annonceId;
+
+        if (!annonceId) {
+            console.warn("⚠ Pas d'annonceId dans l'événement !");
+            return res.status(400).send("annonceId manquant");
         }
-        console.log("Référence du paiement :", ref);
+
+        console.log("AnnonceId reçu :", annonceId);
 
         // Recherche de l'annonce correspondante
-        const annonceQuery = await db.collection("annonces")
-            .where("paymentReference", "==", ref)
-            .limit(1)
-            .get();
+        const annonceRef = db.collection("annonces").doc(annonceId);
+        const annonceDoc = await annonceRef.get();
 
-        if (annonceQuery.empty) {
-            console.warn("⚠ Annonce non trouvée pour la référence :", ref);
+        if (!annonceDoc.exists) {
+            console.warn("Annonce non trouvée :", annonceId);
             return res.status(404).send("Annonce non trouvée");
         }
 
-        const annonceDoc = annonceQuery.docs[0];
-        const annonceRef = annonceDoc.ref;
         const annonceData = annonceDoc.data();
 
         console.log("Annonce trouvée :", annonceRef.id);
@@ -758,7 +756,7 @@ app.post("/webhook/yabetoo", express.json(), async (req, res) => {
         // Gestion du type d'événement
         switch (event.type) {
             case "intent.succeeded":
-                console.log("✅ Paiement réussi pour :", ref);
+                console.log("Paiement réussi pour annonce :", annonceId);
                 await annonceRef.update({
                     statut: "published",
                     paiementEffectue: true,
@@ -770,7 +768,7 @@ app.post("/webhook/yabetoo", express.json(), async (req, res) => {
             case "intent.failed":
             case "intent.canceled":
             case "intent.expired":
-                console.log("paiement échoué / annulé / expiré pour :", ref);
+                console.log("paiement échoué / annulé / expiré pour annonce :", annonceId);
                 await rollbackAnnonce(annonceRef, annonceData);
                 console.log("Rollback effectué pour l'annonce :", annonceRef.id);
                 break;
