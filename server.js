@@ -638,7 +638,6 @@ app.post("/api/create-annonce-payment", async (req, res) => {
             accountId: YABETOOPAY_MERCHANT_ID,
             total: totalPrix,
             currency: "xaf",
-            successUrl: "http://127.0.0.1:5500/#home",
             cancelUrl: "http://127.0.0.1:5500/#ajouter",
             metadata: { type: "publication_annonce", uid, annonceId },
             items: [
