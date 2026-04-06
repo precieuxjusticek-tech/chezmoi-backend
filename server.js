@@ -176,7 +176,8 @@ app.post("/api/annonces", upload.array("images", 15), async (req, res) => {
 
         // Crée annonce avec statut "pending_payment"
         const now = new Date();
-        const expireAt = admin.firestore.Timestamp.fromDate(new Date(Date.now() + 2*60*1000)); // 2min
+        const EXPIRATION_TIME = 2*60*1000 // 2 min
+        const expireAt = admin.firestore.Timestamp.fromDate(new Date(Date.now() + EXPIRATION_TIME));
         const annonceRef = await db.collection("annonces").add({
             uid,
             titre,
@@ -196,43 +197,11 @@ app.post("/api/annonces", upload.array("images", 15), async (req, res) => {
             expireAt
         });
 
-        // ===== UPLOAD DES IMAGES SUR IMGBB =====
-        const imagesUrls = [];
-        const imagesDeleteUrls = [];
-
         if (req.files && req.files.length > 0) {
-            for (const file of req.files) {
-                const formData = new URLSearchParams();
-                formData.append("key", process.env.IMGBB_API_KEY);
-                formData.append("image", fs.readFileSync(file.path, { encoding: "base64" }));
-
-                try {
-                    const response = await fetch("https://api.imgbb.com/1/upload", {
-                        method: "POST",
-                        body: formData
-                    });
-
-                    const data = await response.json();
-                    if (data.success) {
-                        imagesUrls.push(data.data.url);
-                        imagesDeleteUrls.push(data.data.delete_url);
-                    } else {
-                        console.error("Erreur upload Imgbb :", data);
-                    }
-
-                    // supprime le fichier temporaire après upload
-                    fs.unlinkSync(file.path);
-
-                } catch (err) {
-                    console.error("Erreur fetch Imgbb :", err);
-                }
-            }
-
-            // mets à jour l'annonce Firestore avec les images uploadées
-            await annonceRef.update({
-                images: imagesUrls,
-                imagesDeleteUrls: imagesDeleteUrls
-            });
+            const imagesTemp = req.files.map(file => fs.readFileSync(file.path, { encoding: "base64" }));
+            await annonceRef.update({ imagesTemp });
+            // tu peux supprimer les fichiers temporaires si tu veux
+            req.files.forEach(file => fs.unlinkSync(file.path));
         }
 
         res.status(201).json({ 
@@ -278,7 +247,10 @@ app.get("/api/annonces", async (req, res) => {
         }
 
         // Récupère annonces valides
-        const snapshot = await db.collection("annonces").where("expireAt", ">", now).get();
+        const snapshot = await db.collection("annonces")
+            .where("expireAt", ">", now)
+            .where("statut", "==", "published")
+            .get();
         const annonces = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
         res.json(annonces);
@@ -444,6 +416,11 @@ app.get("/api/annonces/:id", async (req, res) => {
         // Vérifie si l'annonce est expirée
         if (annonce.expireAt && annonce.expireAt <= now) {
             return res.status(410).json({ message: "Annonce expirée" });
+        }
+
+        // Vérifie si l'annonce est publiée
+        if (annonce.statut !== "published") {
+            return res.status(403).json({ message: "Annonce non disponible" });
         }
 
         res.json({ id: annonceDoc.id, ...annonce });
@@ -763,9 +740,6 @@ async function rollbackAnnonce(annonceRef, annonceData) {
 app.post("/webhook/yabetoo", express.json({ type: "application/json" }), async (req, res) => {
     
     try {
-        console.log("=== Webhook Yabetoo reçu ===");
-        console.log("Headers :", req.headers);
-        console.log("Body brut :", req.body);
 
         const signature = req.headers['x-yabetoo-webhook-signature'];
         const timestamp = req.headers['x-yabetoo-webhook-timestamp'];
@@ -805,10 +779,47 @@ app.post("/webhook/yabetoo", express.json({ type: "application/json" }), async (
             case "intent.succeeded":
                 console.log("✅ Paiement réussi pour annonce :", annonceId);
                 if (!annonceData.paiementEffectue) {
+                    const now = new Date();
+                    const THIRTY_DAYS = 2*60*1000; // 30 jours en ms
+                    const newExpireAt = admin.firestore.Timestamp.fromDate(new Date(now.getTime() + THIRTY_DAYS));
+
+                    // ----- UPLOAD DES IMAGES SUR IMGBB DANS LE WEBHOOK -----
+                    const imagesUrls = [];
+                    const imagesDeleteUrls = [];
+
+                    if (annonceData.imagesTemp?.length > 0) {
+                        for (const base64Image of annonceData.imagesTemp) {
+                            const formData = new URLSearchParams();
+                            formData.append("key", process.env.IMGBB_API_KEY);
+                            formData.append("image", base64Image);
+                            formData.append("expiration", 2*60*1000); // 30 jours
+
+                            try {
+                                const response = await fetch("https://api.imgbb.com/1/upload", {
+                                    method: "POST",
+                                    body: formData
+                                });
+                                const data = await response.json();
+                                if (data.success) {
+                                    imagesUrls.push(data.data.url);
+                                    imagesDeleteUrls.push(data.data.delete_url);
+                                } else {
+                                    console.error("Erreur upload Imgbb :", data);
+                                }
+                            } catch (err) {
+                                console.error("Erreur fetch Imgbb :", err);
+                            }
+                        }
+                    }
+
                     await annonceRef.update({
                         statut: "published",
                         paiementEffectue: true,
-                        updatedAt: admin.firestore.Timestamp.now()
+                        updatedAt: admin.firestore.Timestamp.now(),
+                        expireAt: newExpireAt,
+                        images: imagesUrls,
+                        imagesDeleteUrls: imagesDeleteUrls,
+                        imagesTemp: admin.firestore.FieldValue.delete() // supprime le champ temporaire
                     });
                     console.log("Annonce mise à jour en 'published'");
                 } else {
