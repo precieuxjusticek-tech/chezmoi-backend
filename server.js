@@ -655,8 +655,8 @@ app.post("/api/create-annonce-payment", async (req, res) => {
             accountId: YABETOOPAY_MERCHANT_ID,
             total: totalPrix,
             currency: "xaf",
-            successUrl: "http://127.0.0.1:5500/#home",
-            cancelUrl: "http://127.0.0.1:5500/#ajouter",
+            successUrl: "https://chezmoi-app.netlify.app/#home",
+            cancelUrl: "https://chezmoi-app.netlify.app/#ajouter",
             metadata: { type: "publication_annonce", uid, annonceId },
             items: [
                 { productId: "publication_annonce", productName: "Prix réel", quantity: 1, price: prixReel },
@@ -792,7 +792,7 @@ app.post("/webhook/yabetoo", express.json({ type: "application/json" }), async (
                             const formData = new URLSearchParams();
                             formData.append("key", process.env.IMGBB_API_KEY);
                             formData.append("image", base64Image);
-                            formData.append("expiration", 2*60*1000); // 30 jours
+                            formData.append("expiration", 120); // expiration en secondes (2 minutes)
 
                             try {
                                 const response = await fetch("https://api.imgbb.com/1/upload", {
