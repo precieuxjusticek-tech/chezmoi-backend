@@ -758,12 +758,15 @@ app.post("/webhook/yabetoo", express.json({ type: "application/json" }), async (
         const event = req.body;
         console.log("event.type:", event.type);
 
+        const eventType = event?.data?.intent?.metadata?.type;
         const annonceId = event?.data?.intent?.metadata?.annonceId;
+
         if (!annonceId) {
             console.warn("⚠ Pas d'annonceId dans l'événement !");
             return res.status(400).send("annonceId manquant");
         }
         console.log("annonceId extrait:", annonceId);
+        console.log("eventType extrait:", eventType);
 
         const annonceRef = db.collection("annonces").doc(annonceId);
         const annonceDoc = await annonceRef.get();
@@ -775,15 +778,33 @@ app.post("/webhook/yabetoo", express.json({ type: "application/json" }), async (
 
         const annonceData = annonceDoc.data();
 
+        // ===== DEBLOCAGE CONTACT =====
+        if (eventType === "deblocage_contact") {
+            if (event.type === "intent.succeeded") {
+                const maintenant = new Date();
+                const expireDeblocage = new Date(maintenant.getTime() + 3 * 24 * 60 * 60 * 1000);
+
+                await annonceRef.update({
+                    statut_numero: "debloque",
+                    date_deblocage: admin.firestore.Timestamp.fromDate(maintenant),
+                    expire_deblocage: admin.firestore.Timestamp.fromDate(expireDeblocage),
+                    titre_negociation: "En cours de négociation"
+                });
+
+                console.log("✅ Contact débloqué pour annonce :", annonceId);
+            }
+            return res.status(200).send("ok");
+        }
+
+        // ===== PUBLICATION ANNONCE =====
         switch (event.type) {
             case "intent.succeeded":
                 console.log("✅ Paiement réussi pour annonce :", annonceId);
                 if (!annonceData.paiementEffectue) {
                     const now = new Date();
-                    const THIRTY_DAYS = 2*60*1000; // 30 jours en ms
+                    const THIRTY_DAYS = 2*60*1000;
                     const newExpireAt = admin.firestore.Timestamp.fromDate(new Date(now.getTime() + THIRTY_DAYS));
 
-                    // ----- UPLOAD DES IMAGES SUR IMGBB DANS LE WEBHOOK -----
                     const imagesUrls = [];
                     const imagesDeleteUrls = [];
 
@@ -792,7 +813,7 @@ app.post("/webhook/yabetoo", express.json({ type: "application/json" }), async (
                             const formData = new URLSearchParams();
                             formData.append("key", process.env.IMGBB_API_KEY);
                             formData.append("image", base64Image);
-                            formData.append("expiration", 120); // expiration en secondes (2 minutes)
+                            formData.append("expiration", 120);
 
                             try {
                                 const response = await fetch("https://api.imgbb.com/1/upload", {
@@ -815,11 +836,12 @@ app.post("/webhook/yabetoo", express.json({ type: "application/json" }), async (
                     await annonceRef.update({
                         statut: "published",
                         paiementEffectue: true,
+                        statut_numero: "verrouille",
                         updatedAt: admin.firestore.Timestamp.now(),
                         expireAt: newExpireAt,
                         images: imagesUrls,
                         imagesDeleteUrls: imagesDeleteUrls,
-                        imagesTemp: admin.firestore.FieldValue.delete() // supprime le champ temporaire
+                        imagesTemp: admin.firestore.FieldValue.delete()
                     });
                     console.log("Annonce mise à jour en 'published'");
                 } else {
@@ -851,7 +873,7 @@ app.post("/webhook/yabetoo", express.json({ type: "application/json" }), async (
 // ====================================================
 app.post("/api/payment/deblocage", async (req, res) => {
 
-    const { name, msisdn, provider, amount, annonceId, description } = req.body;
+    const { name, msisdn, provider, amount, annonceId, description, uid } = req.body;
 
     if (!name || !msisdn || !provider || !amount || !annonceId) {
         return res.status(400).json({ message: "Champs obligatoires manquants" });
@@ -864,12 +886,14 @@ app.post("/api/payment/deblocage", async (req, res) => {
             total: amount,
             currency: "xaf",
 
-            successUrl: `https://chezmoi-backend.onrender.com/api/annonces/${annonceId}`,
-            cancelUrl: `https://chezmoi-backend.onrender.com/api/annonces/${annonceId}`,
+            successUrl: `https://chezmoi-app.netlify.app/#home`,
+            cancelUrl: `https://chezmoi-app.netlify.app/#home`,
 
             metadata: {
+                type: "deblocage_contact",
                 annonceId: annonceId,
-                msisdn: msisdn
+                msisdn: msisdn,
+                uid: req.body.uid || ""
             },
 
             items: [
