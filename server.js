@@ -802,7 +802,7 @@ app.post("/webhook/yabetoo", express.json({ type: "application/json" }), async (
                 console.log("✅ Paiement réussi pour annonce :", annonceId);
                 if (!annonceData.paiementEffectue) {
                     const now = new Date();
-                    const THIRTY_DAYS = 2*60*1000;
+                    const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000; // 30 jours en ms
                     const newExpireAt = admin.firestore.Timestamp.fromDate(new Date(now.getTime() + THIRTY_DAYS));
 
                     const imagesUrls = [];
@@ -813,7 +813,7 @@ app.post("/webhook/yabetoo", express.json({ type: "application/json" }), async (
                             const formData = new URLSearchParams();
                             formData.append("key", process.env.IMGBB_API_KEY);
                             formData.append("image", base64Image);
-                            formData.append("expiration", 120);
+                            formData.append("expiration", 2592000); // 30 jours en secondes
 
                             try {
                                 const response = await fetch("https://api.imgbb.com/1/upload", {
