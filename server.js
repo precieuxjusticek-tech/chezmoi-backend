@@ -114,6 +114,57 @@ app.post("/api/login", async (req, res) => {
     }
 });
 
+/* ===================================================== */
+/* ================= GOOGLE AUTH ======================= */
+/* ===================================================== */
+app.post("/api/google-auth", async (req, res) => {
+    const { idToken, inscontact } = req.body;
+    if (!idToken) return res.status(400).json({ message: "Token manquant" });
+
+    try {
+        // Vérifier le token Google avec Firebase Admin
+        const decoded = await admin.auth().verifyIdToken(idToken);
+        const { uid, name, email } = decoded;
+
+        const userRef = db.collection("users").doc(uid);
+        const userDoc = await userRef.get();
+
+        if (!userDoc.exists) {
+            // Nouvel utilisateur — vérifier si le contact est fourni
+            if (!inscontact) {
+                return res.status(400).json({
+                    message: "contact_required",
+                    nom: name || "",
+                    email: email
+                });
+            }
+            // Créer l'utilisateur dans Firestore
+            await userRef.set({
+                uid,
+                nom: name || "",
+                email,
+                inscontact,
+                provider: "google",
+                createdAt: admin.firestore.Timestamp.now()
+            });
+            return res.status(201).json({ message: "Compte créé", uid, isNew: true });
+        }
+
+        // Utilisateur existant → connexion directe
+        return res.status(200).json({ message: "Connexion réussie", uid, isNew: false });
+
+    } catch (err) {
+        console.error("Erreur Google Auth:", err);
+        if (err.code === "auth/id-token-expired") {
+            return res.status(401).json({ message: "Session expirée, réessayez" });
+        }
+        if (err.code === "auth/argument-error") {
+            return res.status(401).json({ message: "user_not_found" });
+        }
+        res.status(500).json({ message: "Erreur serveur" });
+    }
+});
+
 /* --- mot de passe ounlié -- */
 app.post("/api/password-reset", async (req, res) => {
     const { email } = req.body;
@@ -153,7 +204,17 @@ app.post("/api/password-reset", async (req, res) => {
 /* ===================================================== */
 app.post("/api/annonces", upload.array("images", 15), async (req, res) => {
     try {
-        const { uid, titre, type_annonce, description, prix, ville, quartier, douche, contact, packSelectionne } = req.body;
+
+        const { 
+            uid, titre, type_annonce, description, prix, ville, quartier, 
+            douche, contact, packSelectionne,
+            // nouveaux champs
+            repere, nbChambres, nbPieces, nbSalons, surface, etage,
+            eau, electricite, parking, gardien, caution, avanceMax,
+            nbDouches, charges, climatiseur, balcon, 
+            groupe_electrogene, forage, cuisine, type_cuisine,
+            toilettes, meuble, disponibilite, disponibiliteDate, wifi 
+        } = req.body;
 
         if (!uid || !titre || !type_annonce || !description || !prix || !ville || !quartier || !contact) {
             return res.status(400).json({ message: "Champs obligatoires manquants" });
@@ -189,6 +250,31 @@ app.post("/api/annonces", upload.array("images", 15), async (req, res) => {
             quartier,
             douche,
             contact,
+            repere: repere || "",
+            nbChambres: nbChambres || "",
+            nbPieces: nbPieces || "",
+            nbSalons: nbSalons || "",
+            surface: surface || "",
+            etage: etage || "",
+            eau: eau || "",
+            electricite: electricite || "",
+            parking: parking || "",
+            gardien: gardien || "",
+            caution: caution || "",
+            avanceMax: avanceMax || "",
+            toilettes: toilettes || "",
+            meuble: meuble || "",
+            disponibilite: disponibilite || "",
+            disponibiliteDate: disponibiliteDate || "",
+            wifi: wifi || "",
+            nbDouches: nbDouches || "",
+            charges: charges || "",
+            climatiseur: climatiseur || "",
+            balcon: balcon || "",
+            groupe_electrogene: groupe_electrogene || "",
+            forage: forage || "",
+            cuisine: cuisine || "",
+            type_cuisine: type_cuisine || "",
             images: [],            // images uploadées après paiement
             imagesDeleteUrls: [],  // delete URLs Imgbb
             packSelectionne: Number(packSelectionne || 0),
