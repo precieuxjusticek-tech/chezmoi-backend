@@ -242,12 +242,11 @@ app.post("/api/annonces", upload.array("images", 15), async (req, res) => {
                         body: formData
                     });
                     const data = await response.json();
-                    if (data.success) {
-                        imagesUrls.push(data.data.url);
-                        imagesDeleteUrls.push(data.data.delete_url);
-                    } else {
-                        console.error("Erreur upload Imgbb :", data);
+                    if (!data.success) {
+                        throw new Error("Erreur upload image");
                     }
+                    imagesUrls.push(data.data.url);
+                    imagesDeleteUrls.push(data.data.delete_url);
                 } catch (err) {
                     console.error("Erreur fetch Imgbb :", err);
                 }
