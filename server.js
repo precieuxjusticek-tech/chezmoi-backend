@@ -257,6 +257,7 @@ app.post("/api/annonces", upload.array("images", 15), async (req, res) => {
             }
         }
 
+        
         // ======= CRÉER ANNONCE DIRECTEMENT PUBLIÉE =======
         const annonceRef = await db.collection("annonces").add({
             uid,
