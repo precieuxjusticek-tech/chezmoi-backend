@@ -74,7 +74,11 @@ app.post("/api/register", async (req, res) => {
         return res.status(400).json({ message: "Le contact est invalide" });
     }
     try {
-        const userRecord = await admin.auth().createUser({ email, password });
+        const userRecord = await admin.auth().createUser({ email });
+
+        await admin.auth().updateUser(userRecord.uid, {
+            password: password
+        });
         await db.collection("users").doc(userRecord.uid).set({
             uid: userRecord.uid,
             nom,
@@ -199,12 +203,10 @@ app.post("/api/annonces", upload.array("images", 15), async (req, res) => {
 
         const {
             uid, titre, type_annonce, description, prix, ville, quartier,
-            douche, contact, packSelectionne,
-            repere, nbChambres, nbPieces, nbSalons, surface, etage,
-            eau, electricite, parking, gardien, caution, avanceMax,
-            nbDouches, charges, climatiseur, balcon,
-            groupe_electrogene, forage, cuisine, type_cuisine,
-            toilettes, meuble, disponibilite, disponibiliteDate, wifi
+            douche, contact, repere, nbChambres, nbPieces, nbSalons, surface,
+            etage, eau, electricite, parking, gardien, caution, avanceMax,
+            nbDouches, charges, climatiseur, balcon, groupe_electrogene, forage, cuisine,
+            type_cuisine, toilettes, meuble, disponibilite, disponibiliteDate, wifi, fraisVisite
         } = req.body;
 
         if (!uid || !titre || !type_annonce || !description || !prix || !ville || !quartier || !contact) {
@@ -293,14 +295,15 @@ app.post("/api/annonces", upload.array("images", 15), async (req, res) => {
             forage: forage || "",
             cuisine: cuisine || "",
             type_cuisine: type_cuisine || "",
-            packSelectionne: Number(packSelectionne || 0),
+            fraisVisite: fraisVisite || "",
+
             images: imagesUrls,
             imagesDeleteUrls: imagesDeleteUrls,
-            statut: "published",           // ✅ publiée directement
+            statut: "published",           // publiée directement
             statut_numero: "verrouille",
             date_deblocage: "",
             createdAt: admin.firestore.Timestamp.fromDate(now),
-            expireAt                        // ✅ 30 jours
+            expireAt                        // 30 jours
         });
 
         res.status(201).json({
