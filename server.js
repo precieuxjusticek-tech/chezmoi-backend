@@ -206,7 +206,9 @@ app.post("/api/annonces", upload.array("images", 15), async (req, res) => {
             douche, contact, repere, nbChambres, nbPieces, nbSalons, surface,
             etage, eau, electricite, parking, gardien, caution, avanceMax,
             nbDouches, charges, climatiseur, balcon, groupe_electrogene, forage, cuisine,
-            type_cuisine, toilettes, meuble, disponibilite, disponibiliteDate, wifi, fraisVisite
+            type_cuisine, toilettes, meuble, disponibilite, disponibiliteDate, wifi, fraisVisite,
+            type_sol, voirie, cloture, viabilisee, facade,
+            titre_propriete, negociable, delai_vente
         } = req.body;
 
         if (!uid || !titre || !type_annonce || !description || !prix || !ville || !quartier || !contact) {
@@ -296,6 +298,14 @@ app.post("/api/annonces", upload.array("images", 15), async (req, res) => {
             cuisine: cuisine || "",
             type_cuisine: type_cuisine || "",
             fraisVisite: fraisVisite || "",
+            type_sol: type_sol || "",
+            voirie: voirie || "",
+            cloture: cloture || "",
+            viabilisee: viabilisee || "",
+            facade: facade || "",
+            titre_propriete: titre_propriete || "",
+            negociable: negociable || "",
+            delai_vente: delai_vente || "",
 
             images: imagesUrls,
             imagesDeleteUrls: imagesDeleteUrls,
