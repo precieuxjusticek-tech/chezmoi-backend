@@ -8,7 +8,14 @@ const cors = require("cors");
 const admin = require("firebase-admin");
 const fetch = require("node-fetch"); // pour Imgbb
 const nodemailer = require("nodemailer"); // pour email
-const FormData = require("form-data");
+
+const cloudinary = require("cloudinary").v2;
+
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
+});
 
 /* ===================================================== */
 /* ================= INITIALISATION ==================== */
@@ -228,56 +235,46 @@ app.post("/api/annonces", upload.array("images", 15), async (req, res) => {
         const expireAt = admin.firestore.Timestamp.fromDate(new Date(Date.now() + THIRTY_DAYS));
         const now = new Date();
 
-        // ======= UPLOAD IMAGES IMGBB DIRECTEMENT =======
+        // ======= UPLOAD IMAGES CLOUDINARY =======
         const imagesUrls = [];
-        const imagesDeleteUrls = [];
+        const imagesDeleteUrls = []; // On stocke les public_ids pour suppression
 
         if (req.files && req.files.length > 0) {
-            console.log(`[ImgBB] ${req.files.length} fichier(s) reçu(s)`);
-            
+            console.log(`[Cloudinary] ${req.files.length} fichier(s) reçu(s)`);
+
             for (const file of req.files) {
                 try {
-                if (!fs.existsSync(file.path)) {
-                    console.error(`[ImgBB] Fichier introuvable: ${file.path}`);
-                    continue;
-                }
+                    if (!fs.existsSync(file.path)) {
+                        console.error(`[Cloudinary] Fichier introuvable: ${file.path}`);
+                        continue;
+                    }
 
-                const base64Image = fs.readFileSync(file.path, { encoding: "base64" });
-                console.log(`[ImgBB] Upload de ${file.originalname}, taille base64: ${base64Image.length}`);
+                    console.log(`[Cloudinary] Upload de ${file.originalname}`);
 
-                // ✅ ImgBB préfère FormData multipart plutôt que URLSearchParams
-                const imgbbForm = new FormData();
-                imgbbForm.append("key", process.env.IMGBB_API_KEY);
-                imgbbForm.append("image", base64Image);
-                imgbbForm.append("expiration", "2592000");
+                    const result = await cloudinary.uploader.upload(file.path, {
+                        folder: "chezmoi",
+                        transformation: [
+                            { width: 900, crop: "limit" },
+                            { quality: "auto" }
+                        ]
+                    });
 
-                const response = await fetch("https://api.imgbb.com/1/upload", {
-                    method: "POST",
-                    body: imgbbForm,
-                    headers: imgbbForm.getHeaders()
-                });
-
-                const data = await response.json();
-                console.log(`[ImgBB] Réponse:`, JSON.stringify(data).slice(0, 200));
-
-                if (data.success && data.data?.url) {
-                    imagesUrls.push(data.data.url);
-                    if (data.data.delete_url) imagesDeleteUrls.push(data.data.delete_url);
-                    console.log(`[ImgBB] ✅ URL: ${data.data.url}`);
-                } else {
-                    console.error(`[ImgBB] ❌ Échec upload:`, data);
-                }
-
-                // Supprimer le fichier temporaire après upload
-                if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+                    if (result.secure_url) {
+                        imagesUrls.push(result.secure_url);
+                        imagesDeleteUrls.push(result.public_id); // public_id pour supprimer plus tard
+                        console.log(`[Cloudinary] ✅ URL: ${result.secure_url}`);
+                    }
 
                 } catch (err) {
-                    console.error(`[ImgBB] Erreur pour ${file.originalname}:`, err.message);
-                    // Nettoyer le fichier même en cas d'erreur
-                    try { if (fs.existsSync(file.path)) fs.unlinkSync(file.path); } catch {}
+                    console.error(`[Cloudinary] Erreur pour ${file.originalname}:`, err.message);
+                } finally {
+                    try {
+                        if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+                    } catch (e) {}
                 }
             }
-            console.log(`[ImgBB] Total images uploadées: ${imagesUrls.length}/${req.files.length}`);
+
+            console.log(`[Cloudinary] Résultat: ${imagesUrls.length}/${req.files.length} images uploadées`);
         }
 
         
@@ -358,10 +355,14 @@ app.get("/api/annonces", async (req, res) => {
         const expiredSnapshot = await db.collection("annonces").where("expireAt", "<=", now).get();
         for (const doc of expiredSnapshot.docs) {
             const data = doc.data();
-            if (data.imagesDeleteUrls) {
-                for (const deleteUrl of data.imagesDeleteUrls) {
-                    try { await fetch(deleteUrl, { method: "GET" }); }
-                    catch(err){ console.error("Erreur suppression image Imgbb :", err); }
+
+            if (data.imagesDeleteUrls && data.imagesDeleteUrls.length > 0) {
+                for (const publicId of data.imagesDeleteUrls) {
+                    try {
+                        await cloudinary.uploader.destroy(publicId);
+                    } catch(err) {
+                        console.error("Erreur suppression image Cloudinary:", err);
+                    }
                 }
             }
 
@@ -578,11 +579,12 @@ app.delete("/api/annonces/:id", async (req, res) => {
         }
 
         if (annonce.imagesDeleteUrls && annonce.imagesDeleteUrls.length > 0) {
-            for (const deleteUrl of annonce.imagesDeleteUrls) {
+            for (const publicId of annonce.imagesDeleteUrls) {
                 try {
-                    await fetch(deleteUrl, { method: "GET" });
+                    await cloudinary.uploader.destroy(publicId);
+                    console.log(`[Cloudinary] Image supprimée: ${publicId}`);
                 } catch (err) {
-                    console.error("Erreur suppression image Imgbb :", err);
+                    console.error("Erreur suppression image Cloudinary:", err);
                 }
             }
         }
