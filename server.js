@@ -8,6 +8,7 @@ const cors = require("cors");
 const admin = require("firebase-admin");
 const fetch = require("node-fetch"); // pour Imgbb
 const nodemailer = require("nodemailer"); // pour email
+const FormData = require("form-data");
 
 /* ===================================================== */
 /* ================= INITIALISATION ==================== */
@@ -232,32 +233,51 @@ app.post("/api/annonces", upload.array("images", 15), async (req, res) => {
         const imagesDeleteUrls = [];
 
         if (req.files && req.files.length > 0) {
+            console.log(`[ImgBB] ${req.files.length} fichier(s) reçu(s)`);
+            
             for (const file of req.files) {
-                const base64Image = fs.readFileSync(file.path, { encoding: "base64" });
-
-                const formData = new URLSearchParams();
-                formData.append("key", process.env.IMGBB_API_KEY);
-                formData.append("image", base64Image);
-                formData.append("expiration", 2592000); // 30 jours en secondes
-
                 try {
-                    const response = await fetch("https://api.imgbb.com/1/upload", {
-                        method: "POST",
-                        body: formData
-                    });
-                    const data = await response.json();
-                    if (!data.success) {
-                        throw new Error("Erreur upload image");
-                    }
-                    imagesUrls.push(data.data.url);
-                    imagesDeleteUrls.push(data.data.delete_url);
-                } catch (err) {
-                    console.error("Erreur fetch Imgbb :", err);
+                if (!fs.existsSync(file.path)) {
+                    console.error(`[ImgBB] Fichier introuvable: ${file.path}`);
+                    continue;
                 }
 
-                // Supprimer fichier temporaire
-                fs.unlinkSync(file.path);
+                const base64Image = fs.readFileSync(file.path, { encoding: "base64" });
+                console.log(`[ImgBB] Upload de ${file.originalname}, taille base64: ${base64Image.length}`);
+
+                // ✅ ImgBB préfère FormData multipart plutôt que URLSearchParams
+                const imgbbForm = new FormData();
+                imgbbForm.append("key", process.env.IMGBB_API_KEY);
+                imgbbForm.append("image", base64Image);
+                imgbbForm.append("expiration", "2592000");
+
+                const response = await fetch("https://api.imgbb.com/1/upload", {
+                    method: "POST",
+                    body: imgbbForm,
+                    headers: imgbbForm.getHeaders()
+                });
+
+                const data = await response.json();
+                console.log(`[ImgBB] Réponse:`, JSON.stringify(data).slice(0, 200));
+
+                if (data.success && data.data?.url) {
+                    imagesUrls.push(data.data.url);
+                    if (data.data.delete_url) imagesDeleteUrls.push(data.data.delete_url);
+                    console.log(`[ImgBB] ✅ URL: ${data.data.url}`);
+                } else {
+                    console.error(`[ImgBB] ❌ Échec upload:`, data);
+                }
+
+                // Supprimer le fichier temporaire après upload
+                if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+
+                } catch (err) {
+                    console.error(`[ImgBB] Erreur pour ${file.originalname}:`, err.message);
+                    // Nettoyer le fichier même en cas d'erreur
+                    try { if (fs.existsSync(file.path)) fs.unlinkSync(file.path); } catch {}
+                }
             }
+            console.log(`[ImgBB] Total images uploadées: ${imagesUrls.length}/${req.files.length}`);
         }
 
         
