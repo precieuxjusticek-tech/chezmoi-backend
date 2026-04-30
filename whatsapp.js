@@ -3,6 +3,12 @@
 // ===================================================
 const axios = require("axios");
 
+console.log("[WhatsApp] DEBUG vars:", {
+  baseUrl: process.env.ULTRAMSG_BASE_URL,
+  instanceId: process.env.ULTRAMSG_INSTANCE_ID,
+  token: process.env.ULTRAMSG_TOKEN ? "OK" : "MANQUANT"
+});
+
 async function sendWhatsApp(phone, message) {
   const instanceId = process.env.ULTRAMSG_INSTANCE_ID;
   const token      = process.env.ULTRAMSG_TOKEN;
