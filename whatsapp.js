@@ -3,22 +3,20 @@
 // ===================================================
 const axios = require("axios");
 
-/**
- * Envoie un message WhatsApp via UltraMsg
- * @param {string} phone  - numéro sans espaces, ex: "242060000000"
- * @param {string} message - texte du message
- */
 async function sendWhatsApp(phone, message) {
   const instanceId = process.env.ULTRAMSG_INSTANCE_ID;
   const token      = process.env.ULTRAMSG_TOKEN;
   const baseUrl    = process.env.ULTRAMSG_BASE_URL;
 
   if (!instanceId || !token || !baseUrl) {
-    console.warn("[WhatsApp] ⚠️  Variables UltraMsg manquantes — message non envoyé");
+    console.warn("[WhatsApp] ⚠️ Variables manquantes:", { instanceId: !!instanceId, token: !!token, baseUrl: !!baseUrl });
     return;
   }
 
-  const url = `${baseUrl}/instance${instanceId}/messages/chat`;
+  // URL propre — baseUrl ne contient PAS l'instanceId
+  const url = `${baseUrl}/${instanceId}/messages/chat`;
+  console.log(`[WhatsApp] → URL: ${url}`);
+  console.log(`[WhatsApp] → Destinataire: ${phone}`);
 
   try {
     const res = await axios.post(
@@ -30,10 +28,21 @@ async function sendWhatsApp(phone, message) {
       }).toString(),
       { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
     );
-    console.log(`[WhatsApp] ✅ Envoyé à ${phone} — statut: ${res.data?.sent}`);
+
+    // Log complet pour diagnostic
+    console.log(`[WhatsApp] Réponse brute:`, JSON.stringify(res.data));
+
+    if (res.data?.sent === "true" || res.data?.sent === true) {
+      console.log(`[WhatsApp] ✅ Message livré à ${phone}`);
+    } else {
+      console.error(`[WhatsApp] ❌ Échec pour ${phone}:`, res.data);
+    }
+
   } catch (err) {
-    console.error(`[WhatsApp] ❌ Échec envoi à ${phone}: ${err.message}`);
-    // On ne throw PAS — l'erreur WA ne bloque pas la réponse backend
+    console.error(`[WhatsApp] ❌ Erreur HTTP pour ${phone}: ${err.message}`);
+    if (err.response) {
+      console.error(`[WhatsApp] Réponse erreur:`, JSON.stringify(err.response.data));
+    }
   }
 }
 
@@ -44,40 +53,40 @@ async function sendWhatsApp(phone, message) {
 function msgProprietaire({ nomProprio, titre, prix, ville, prenomDemandeur, urgence, budget }) {
   return `Salut ${nomProprio} 👋 C'est ChezMoi !
 
-    Un locataire sérieux veut ton bien :
-    🏠 ${titre} - ${Number(prix).toLocaleString("fr-FR")} FC - ${ville}
+Un locataire sérieux veut ton bien :
+🏠 ${titre} - ${Number(prix).toLocaleString("fr-FR")} FC - ${ville}
 
-    👤 ${prenomDemandeur} - Cherche ${urgence} - Budget ${budget}
+👤 ${prenomDemandeur} - Cherche ${urgence} - Budget ${budget}
 
-    Réponds vite, demande fraîche 🔥`;
+Réponds vite, demande fraîche 🔥`;
 }
 
 function msgAdmin({ titre, annonceId, prix, nomProprio, numeroProprio, prenomDemandeur, numeroDemandeur, urgence, budget, quartier }) {
   const ts = new Date().toLocaleString("fr-FR", { timeZone: "Africa/Brazzaville" });
   return `🔔 DEMANDE CHEZMOI
 
-    Annonce: ${titre} #${annonceId}
-    Prix: ${Number(prix).toLocaleString("fr-FR")} FC
-    Proprio: ${nomProprio} ${numeroProprio}
-    Demandeur: ${prenomDemandeur} ${numeroDemandeur}
-    Urgence: ${urgence}
-    Budget: ${budget}
-    Quartier: ${quartier}
-    Heure: ${ts}`;
+Annonce: ${titre} #${annonceId}
+Prix: ${Number(prix).toLocaleString("fr-FR")} FC
+Proprio: ${nomProprio} ${numeroProprio}
+Demandeur: ${prenomDemandeur} ${numeroDemandeur}
+Urgence: ${urgence}
+Budget: ${budget}
+Quartier: ${quartier}
+Heure: ${ts}`;
 }
 
 function msgDemandeur({ prenomDemandeur, titre, quartier, prix }) {
   return `✅ Salut ${prenomDemandeur} !
 
-    Ta demande ChezMoi a bien été envoyée au propriétaire 📨
+Ta demande ChezMoi a bien été envoyée au propriétaire 📨
 
-    Annonce :
-    🏠 ${titre}
-    📍 ${quartier}
-    💰 ${Number(prix).toLocaleString("fr-FR")} FC
+Annonce :
+🏠 ${titre}
+📍 ${quartier}
+💰 ${Number(prix).toLocaleString("fr-FR")} FC
 
-    Le propriétaire examine ta demande.
-    ChezMoi te prévient dès qu'il répond.`;
+Le propriétaire examine ta demande.
+ChezMoi te prévient dès qu'il répond.`;
 }
 
 module.exports = { sendWhatsApp, msgProprietaire, msgAdmin, msgDemandeur };
