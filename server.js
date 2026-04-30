@@ -10,6 +10,7 @@ const fetch = require("node-fetch"); // pour Imgbb
 const nodemailer = require("nodemailer"); // pour email
 const webpush = require("web-push");
 const cloudinary = require("cloudinary").v2;
+const { sendWhatsApp, msgProprietaire, msgAdmin, msgDemandeur } = require("./whatsapp");
 
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -892,7 +893,6 @@ app.get("/api/contact-requests/status", async (req, res) => {
     today.setHours(0, 0, 0, 0);
     const todayTs = admin.firestore.Timestamp.fromDate(today);
 
-    // Compter déblocages du jour pour cette annonce
     const snap = await db.collection("contact_requests")
       .where("annonceId", "==", annonceId)
       .where("createdAt", ">=", todayTs)
@@ -900,7 +900,6 @@ app.get("/api/contact-requests/status", async (req, res) => {
 
     const used = snap.size;
 
-    // Vérifier si ce user a déjà fait une demande sur cette annonce
     let dejaUtilise = false;
     if (userId) {
       const userSnap = await db.collection("contact_requests")
@@ -912,7 +911,8 @@ app.get("/api/contact-requests/status", async (req, res) => {
 
     res.json({ used, dejaUtilise });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error("Erreur contact-requests/status:", err); // ← AJOUTE ÇA
+    res.status(500).json({ message: err.message });        // ← ET ÇA
   }
 });
 
@@ -963,6 +963,73 @@ app.post("/api/contact-requests", async (req, res) => {
       createdAt: admin.firestore.Timestamp.now(),
       status: "nouvelle"
     });
+
+    // ===== NOTIFICATIONS WHATSAPP =====
+    // On lance en arrière-plan — ne bloque pas la réponse
+    (async () => {
+      try {
+        // Récupérer les données de l'annonce
+        const annonceDoc = await db.collection("annonces").doc(annonceId).get();
+        if (!annonceDoc.exists) {
+          console.warn("[WhatsApp] Annonce introuvable:", annonceId);
+          return;
+        }
+        const annonce = annonceDoc.data();
+
+        // Récupérer les données du propriétaire
+        const ownerDoc = await db.collection("users").doc(ownerId).get();
+        const owner = ownerDoc.exists ? ownerDoc.data() : {};
+
+        const contexte = {
+          titre:           annonce.titre || "Annonce",
+          prix:            annonce.prix  || "0",
+          ville:           annonce.ville || "",
+          quartier:        annonce.quartier || "",
+          annonceId,
+          nomProprio:      owner.nom        || "Propriétaire",
+          numeroProprio:   owner.inscontact || annonce.contact || "",
+          prenomDemandeur: prenom,
+          numeroDemandeur: whatsapp,
+          urgence,
+          budget
+        };
+
+        // Formater les numéros (UltraMsg attend le format international sans +)
+        const numProprio    = String(contexte.numeroProprio).replace(/\D/g, "");
+        const numDemandeur  = String(whatsapp).replace(/\D/g, "");
+        const numAdmin      = String(process.env.ULTRAMSG_ADMIN_PHONE || "").replace(/\D/g, "");
+
+        console.log("[WhatsApp] Envoi des 3 notifications...");
+
+        // 1. Message au propriétaire
+        if (numProprio) {
+          await sendWhatsApp(numProprio, msgProprietaire(contexte));
+        } else {
+          console.warn("[WhatsApp] Numéro proprio manquant — message proprio ignoré");
+        }
+
+        // 2. Message à l'admin
+        if (numAdmin) {
+          await sendWhatsApp(numAdmin, msgAdmin(contexte));
+        } else {
+          console.warn("[WhatsApp] ULTRAMSG_ADMIN_PHONE non défini — message admin ignoré");
+        }
+
+        // 3. Message au demandeur
+        if (numDemandeur) {
+          await sendWhatsApp(numDemandeur, msgDemandeur(contexte));
+        } else {
+          console.warn("[WhatsApp] Numéro demandeur manquant — message demandeur ignoré");
+        }
+
+        console.log("[WhatsApp] ✅ 3 notifications traitées");
+
+      } catch (err) {
+        // Ne jamais faire crasher le backend à cause de WhatsApp
+        console.error("[WhatsApp] ❌ Erreur bloc notifications:", err.message);
+      }
+    })();
+    // ===== FIN NOTIFICATIONS WHATSAPP =====
 
     res.status(201).json({ message: "Demande enregistrée" });
 
