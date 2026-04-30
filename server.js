@@ -10,7 +10,7 @@ const fetch = require("node-fetch"); // pour Imgbb
 const nodemailer = require("nodemailer"); // pour email
 const webpush = require("web-push");
 const cloudinary = require("cloudinary").v2;
-const { sendWhatsApp, msgProprietaire, msgAdmin, msgDemandeur } = require("./whatsapp");
+const { sendWhatsApp, creerActionRequest, getCompteurJournalier, msgProprietaire, msgAdmin, msgDemandeur } = require("./whatsapp");
 
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -980,6 +980,15 @@ app.post("/api/contact-requests", async (req, res) => {
         const ownerDoc = await db.collection("users").doc(ownerId).get();
         const owner = ownerDoc.exists ? ownerDoc.data() : {};
 
+        // ===== GÉNÉRER TOKEN + COMPTEUR =====
+        const token    = await creerActionRequest(db, {
+          annonceId,
+          ownerUid:     ownerId,
+          requesterUid: userId
+        });
+
+        const compteur = await getCompteurJournalier(db, annonceId);
+
         const contexte = {
           titre:           annonce.titre || "Annonce",
           prix:            annonce.prix  || "0",
@@ -991,7 +1000,9 @@ app.post("/api/contact-requests", async (req, res) => {
           prenomDemandeur: prenom,
           numeroDemandeur: whatsapp,
           urgence,
-          budget
+          budget,
+          token,
+          compteur
         };
 
         // Formater les numéros (UltraMsg attend le format international sans +)
@@ -1001,7 +1012,7 @@ app.post("/api/contact-requests", async (req, res) => {
 
         console.log("[WhatsApp] Envoi des 3 notifications...");
 
-        // 1. Message au propriétaire
+        // 1. Message au propriétaire AVEC liens d'action
         if (numProprio) {
           await sendWhatsApp(numProprio, msgProprietaire(contexte));
         } else {
