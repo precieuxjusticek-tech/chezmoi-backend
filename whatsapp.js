@@ -1,12 +1,14 @@
 // ===================================================
 // SERVICE WHATSAPP — UltraMsg
 // ===================================================
-const axios  = require("axios");
+const fetch  = require("node-fetch");
 const crypto = require("crypto");
 
 // ===================================================
 // NORMALISATION NUMÉRO CONGO
 // ===================================================
+const WHATSAPP_BOT_URL = process.env.WHATSAPP_BOT_URL || "http://localhost:3001/send-message";
+
 function normaliserNumero(phone) {
   let num = String(phone || "").replace(/\D/g, "");
   if (num.length === 9 && (num.startsWith("06") || num.startsWith("05") || num.startsWith("04"))) {
@@ -19,40 +21,30 @@ function normaliserNumero(phone) {
   return num;
 }
 
-// ===================================================
-// ENVOI WHATSAPP
-// ===================================================
 async function sendWhatsApp(phoneRaw, message) {
-  const phone      = normaliserNumero(phoneRaw);
-  const instanceId = process.env.ULTRAMSG_INSTANCE_ID;
-  const token      = process.env.ULTRAMSG_TOKEN;
-  const baseUrl    = process.env.ULTRAMSG_BASE_URL;
+  const phone = normaliserNumero(phoneRaw);
 
-  if (!instanceId || !token || !baseUrl) {
-    console.warn("[WhatsApp] ⚠️ Variables manquantes");
-    return;
-  }
   if (!phone || phone.length < 9) {
     console.warn(`[WhatsApp] ⚠️ Numéro invalide ignoré: ${phoneRaw}`);
     return;
   }
 
-  const url = `${baseUrl}/${instanceId}/messages/chat`;
-
   try {
-    const res = await axios.post(
-      url,
-      new URLSearchParams({ token, to: phone, body: message }).toString(),
-      { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
-    );
-    if (res.data?.sent === "true" || res.data?.sent === true) {
-      console.log(`[WhatsApp] ✅ Livré à ${phone} (id: ${res.data?.id})`);
+    const res = await fetch(WHATSAPP_BOT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone, message })
+    });
+
+    const data = await res.json();
+
+    if (data.success) {
+      console.log(`[WhatsApp] ✅ Livré à ${phone}`);
     } else {
-      console.error(`[WhatsApp] ❌ Échec pour ${phone}:`, res.data);
+      console.error(`[WhatsApp] ❌ Échec pour ${phone}:`, data.error);
     }
   } catch (err) {
     console.error(`[WhatsApp] ❌ Erreur pour ${phone}: ${err.message}`);
-    if (err.response) console.error(`[WhatsApp] Détail:`, JSON.stringify(err.response.data));
   }
 }
 
@@ -135,52 +127,106 @@ function msgProprietaire({ nomProprio, titre, prix, ville, prenomDemandeur, urge
   const backendUrl = process.env.BACKEND_URL || "https://chezmoi-backend.onrender.com";
   return `Salut ${nomProprio} 👋 C'est ChezMoi !
 
-Un locataire sérieux veut ton bien :
-🏠 ${titre} - ${Number(prix).toLocaleString("fr-FR")} FC - ${ville}
+  Un locataire sérieux veut ton bien :
+  🏠 ${titre} - ${Number(prix).toLocaleString("fr-FR")} FC - ${ville}
+  👤 ${prenomDemandeur} - Cherche ${urgence} - Budget ${budget}
 
-👤 ${prenomDemandeur} - Cherche ${urgence} - Budget ${budget}
+  ━━━━━━━━━━━━━━
+  👉 ACTION REQUISE : clique sur un choix ci-dessous
+  ━━━━━━━━━━━━━━
 
-Tu gères, tu décides 👑
+  🟢 [ J'ACCEPTE CE LOCATAIRE ]
+  ${backendUrl}/api/whatsapp/action/accept?token=${token}
 
-✅ J'ACCEPTE
-${backendUrl}/api/whatsapp/action/accept?token=${token}
+  🟠 [ BIEN DÉJÀ LOUÉ ]
+  ${backendUrl}/api/whatsapp/action/loue?token=${token}
 
-🔒 DÉJÀ LOUÉ
-${backendUrl}/api/whatsapp/action/loue?token=${token}
+  🔴 [ PAS INTÉRESSÉ ]
+  ${backendUrl}/api/whatsapp/action/refuse?token=${token}
 
-❌ PAS INTÉRESSÉ
-${backendUrl}/api/whatsapp/action/refuse?token=${token}
-
-Lien expire dans 24h ⏳
-${compteur}/5 demandes aujourd'hui`;
+  ⏳ Un seul clic suffit. Lien valide 24h.
+  ${compteur}/5 demandes aujourd'hui.`;
 }
 
 function msgAdmin({ titre, annonceId, prix, nomProprio, numeroProprio, prenomDemandeur, numeroDemandeur, urgence, budget, quartier }) {
   const ts = new Date().toLocaleString("fr-FR", { timeZone: "Africa/Brazzaville" });
   return `🔔 DEMANDE CHEZMOI
 
-Annonce: ${titre} #${annonceId}
-Prix: ${Number(prix).toLocaleString("fr-FR")} FC
-Proprio: ${nomProprio} ${numeroProprio}
-Demandeur: ${prenomDemandeur} ${numeroDemandeur}
-Urgence: ${urgence}
-Budget: ${budget}
-Quartier: ${quartier}
-Heure: ${ts}`;
+  Annonce: ${titre} #${annonceId}
+  Prix: ${Number(prix).toLocaleString("fr-FR")} FC
+  Proprio: ${nomProprio} ${numeroProprio}
+  Demandeur: ${prenomDemandeur} ${numeroDemandeur}
+  Urgence: ${urgence}
+  Budget: ${budget}
+  Quartier: ${quartier}
+  Heure: ${ts}`;
 }
 
 function msgDemandeur({ prenomDemandeur, titre, quartier, prix }) {
   return `✅ Salut ${prenomDemandeur} !
 
-Ta demande ChezMoi a bien été envoyée au propriétaire 📨
+  Ta demande ChezMoi a bien été envoyée au propriétaire 📨
 
-Annonce :
-🏠 ${titre}
-📍 ${quartier}
-💰 ${Number(prix).toLocaleString("fr-FR")} FC
+  Annonce :
+  🏠 ${titre}
+  📍 ${quartier}
+  💰 ${Number(prix).toLocaleString("fr-FR")} FC
 
-Le propriétaire examine ta demande.
-ChezMoi te prévient dès qu'il répond.`;
+  Le propriétaire examine ta demande.
+  ChezMoi te prévient dès qu'il répond.`;
+}
+
+function msgAfterAccept({ prenomDemandeur, numeroDemandeur, nomProprio, numeroProprio, quartier, prix }) {
+  return `🎉 EXCELLENTE NOUVELLE ${prenomDemandeur} !
+
+  ${nomProprio} vient d'accepter ta demande 🖤
+  Il a ton numéro et va te contacter.
+  Ou appelle-le direct : 📞 ${numeroProprio}
+
+  Message prêt :
+  "Bonjour ${nomProprio}, c'est ${prenomDemandeur} via ChezMoi. Je suis intéressé par le bien ${quartier} à ${Number(prix).toLocaleString("fr-FR")} FC. Dispo quand pour visiter ?"`;
+}
+
+function msgAfterAcceptProprio({ nomProprio, prenomDemandeur, numeroDemandeur, quartier, prix }) {
+  return `Merci ${nomProprio} 🙏 Contact envoyé à ${prenomDemandeur} !
+
+  Voici son numéro : ${numeroDemandeur}
+
+  Message suggéré :
+  "Bonjour ${prenomDemandeur}, c'est ${nomProprio} de ChezMoi. Pour le bien ${quartier} à ${Number(prix).toLocaleString("fr-FR")} FC, dispo quand ?"
+
+  ⚠️ 1 plainte arnaque = suppression directe
+  2 plaintes = bannissement définitif`;
+}
+
+function msgAfterAcceptAdmin({ annonceId, nomProprio, prenomDemandeur }) {
+  return `✅ PROPRIO A ACCEPTÉ
+  Annonce ${annonceId}
+  ${nomProprio} a accepté ${prenomDemandeur}`;
+}
+
+function msgAfterLoue({ prenomDemandeur }) {
+  return `😔 Désolé ${prenomDemandeur},
+  le propriétaire indique que ce bien est déjà loué.
+
+  ChezMoi continue de chercher pour toi 🔎`;
+}
+
+function msgAfterLoueAdmin({ annonceId, nomProprio }) {
+  return `🔒 ANNONCE FERMÉE
+  Annonce ${annonceId} marquée déjà louée par ${nomProprio}`;
+}
+
+function msgAfterRefuse({ prenomDemandeur }) {
+  return `😕 ${prenomDemandeur}, le propriétaire n'est pas intéressé pour cette demande.
+
+  ChezMoi libère ta place pour d'autres opportunités.`;
+}
+
+function msgAfterRefuseAdmin({ annonceId, nomProprio, prenomDemandeur }) {
+  return `❌ DEMANDE REFUSÉE
+  Annonce ${annonceId}
+  ${nomProprio} a refusé ${prenomDemandeur}`;
 }
 
 module.exports = {
@@ -190,5 +236,13 @@ module.exports = {
   getCompteurJournalier,
   msgProprietaire,
   msgAdmin,
-  msgDemandeur
+  msgDemandeur,
+  // ← nouvelles
+  msgAfterAccept,
+  msgAfterAcceptProprio,
+  msgAfterAcceptAdmin,
+  msgAfterLoue,
+  msgAfterLoueAdmin,
+  msgAfterRefuse,
+  msgAfterRefuseAdmin
 };

@@ -10,7 +10,13 @@ const fetch = require("node-fetch"); // pour Imgbb
 const nodemailer = require("nodemailer"); // pour email
 const webpush = require("web-push");
 const cloudinary = require("cloudinary").v2;
-const { sendWhatsApp, creerActionRequest, getCompteurJournalier, msgProprietaire, msgAdmin, msgDemandeur } = require("./whatsapp");
+const {
+  sendWhatsApp, creerActionRequest, getCompteurJournalier,
+  msgProprietaire, msgAdmin, msgDemandeur,
+  msgAfterAccept, msgAfterAcceptProprio, msgAfterAcceptAdmin,
+  msgAfterLoue, msgAfterLoueAdmin,
+  msgAfterRefuse, msgAfterRefuseAdmin
+} = require("./whatsapp");
 
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -1046,6 +1052,247 @@ app.post("/api/contact-requests", async (req, res) => {
 
   } catch (err) {
     res.status(500).json({ message: err.message });
+  }
+});
+
+/* ===================================================== */
+/* ============ WHATSAPP ACTION HELPERS ================ */
+/* ===================================================== */
+
+async function validateActionToken(token) {
+  if (!token || typeof token !== "string" || token.length < 10) {
+    return { valid: false, reason: "Token manquant ou invalide." };
+  }
+
+  const ref = db.collection("action_requests").doc(token);
+  const snap = await ref.get();
+
+  if (!snap.exists) {
+    return { valid: false, reason: "Ce lien n'existe pas." };
+  }
+
+  const data = snap.data();
+
+  const now = admin.firestore.Timestamp.now();
+  if (data.expireAt && data.expireAt.toMillis() < now.toMillis()) {
+    return { valid: false, reason: "Ce lien a expiré (valide 24h)." };
+  }
+
+  if (data.status !== "pending") {
+    const labels = {
+      accepted:    "✅ Vous avez déjà accepté ce locataire.",
+      closed_loue: "🔒 Vous avez déjà marqué ce bien comme loué.",
+      refused:     "❌ Vous avez déjà refusé cette demande."
+    };
+    return {
+      valid: false,
+      reason: labels[data.status] || "Ce lien a déjà été utilisé."
+    };
+  }
+
+  return { valid: true, ref, data };
+}
+
+async function markActionStatus(ref, status) {
+  await ref.update({
+    status,
+    processedAt: admin.firestore.Timestamp.now()
+  });
+}
+
+function htmlRetour(emoji, titre, message, couleur) {
+  return `<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChezMoi — Action enregistrée</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f5f5;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 20px;
+    }
+    .card {
+      background: #fff;
+      border-radius: 20px;
+      padding: 40px 30px;
+      max-width: 380px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.10);
+    }
+    .emoji { font-size: 56px; margin-bottom: 18px; }
+    .titre { font-size: 20px; font-weight: 700; color: ${couleur}; margin-bottom: 12px; }
+    .message { font-size: 15px; color: #555; line-height: 1.6; }
+    .brand { margin-top: 32px; font-size: 13px; color: #bbb; font-weight: 500; }
+    .dot { color: #fd802e; font-weight: 800; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="emoji">${emoji}</div>
+    <div class="titre">${titre}</div>
+    <div class="message">${message}</div>
+    <div class="brand">Chez<span class="dot">Moi</span> &mdash; Immobilier au Congo</div>
+  </div>
+</body>
+</html>`;
+}
+
+async function getContexteAction(data) {
+  // data = contenu du doc action_requests
+  const numAdmin = String(process.env.ULTRAMSG_ADMIN_PHONE || "").replace(/\D/g, "");
+
+  // Récupérer annonce
+  const annonceDoc = await db.collection("annonces").doc(data.annonceId).get();
+  const annonce = annonceDoc.exists ? annonceDoc.data() : {};
+
+  // Récupérer proprio
+  const ownerDoc = await db.collection("users").doc(data.ownerUid).get();
+  const owner = ownerDoc.exists ? ownerDoc.data() : {};
+
+  // Récupérer demandeur depuis contact_requests
+  const reqSnap = await db.collection("contact_requests")
+    .where("annonceId", "==", data.annonceId)
+    .where("userId", "==", data.requesterUid)
+    .orderBy("createdAt", "desc")
+    .limit(1)
+    .get();
+  const req = reqSnap.empty ? {} : reqSnap.docs[0].data();
+
+  return {
+    annonceId:       data.annonceId,
+    nomProprio:      owner.nom        || "Propriétaire",
+    numeroProprio:   String(owner.inscontact || annonce.contact || "").replace(/\D/g, ""),
+    prenomDemandeur: req.prenom       || "le locataire",
+    numeroDemandeur: String(req.whatsapp || "").replace(/\D/g, ""),
+    quartier:        annonce.quartier || "",
+    prix:            annonce.prix     || "0",
+    numAdmin
+  };
+}
+
+/* ===================================================== */
+/* ============ WHATSAPP ACTION ROUTES ================= */
+/* ===================================================== */
+
+app.get("/api/whatsapp/action/accept", async (req, res) => {
+  const { token } = req.query;
+  try {
+    const result = await validateActionToken(token);
+    if (!result.valid) {
+      return res.status(410).send(htmlRetour("⚠️", "Lien non valide", result.reason, "#e65100"));
+    }
+    await markActionStatus(result.ref, "accepted");
+
+    res.send(htmlRetour(
+      "✅", "Locataire accepté !",
+      "Votre choix a bien été enregistré par ChezMoi.<br>Le locataire sera notifié.",
+      "#2e7d32"
+    ));
+
+    // Notifications en arrière-plan
+    (async () => {
+      try {
+        const ctx = await getContexteAction(result.data);
+        const { nomProprio, numeroProprio, prenomDemandeur, numeroDemandeur, numAdmin, annonceId, quartier, prix } = ctx;
+
+        if (numeroDemandeur) await sendWhatsApp(numeroDemandeur, msgAfterAccept({ prenomDemandeur, numeroDemandeur, nomProprio, numeroProprio, quartier, prix }));
+        if (numeroProprio)   await sendWhatsApp(numeroProprio,   msgAfterAcceptProprio({ nomProprio, prenomDemandeur, numeroDemandeur, quartier, prix }));
+        if (numAdmin)        await sendWhatsApp(numAdmin,        msgAfterAcceptAdmin({ annonceId, nomProprio, prenomDemandeur }));
+      } catch (err) {
+        console.error("[Action/accept] Notif erreur:", err.message);
+      }
+    })();
+
+  } catch (err) {
+    console.error("[Action/accept] Erreur:", err.message);
+    res.status(500).send(htmlRetour("❌", "Erreur serveur", "Réessayez plus tard.", "#c62828"));
+  }
+});
+
+app.get("/api/whatsapp/action/loue", async (req, res) => {
+  const { token } = req.query;
+  try {
+    const result = await validateActionToken(token);
+    if (!result.valid) {
+      return res.status(410).send(htmlRetour("⚠️", "Lien non valide", result.reason, "#e65100"));
+    }
+    await markActionStatus(result.ref, "closed_loue");
+
+    // Désactiver l'annonce en base
+    try {
+      await db.collection("annonces").doc(result.data.annonceId).update({
+        statut: "loue",
+        active: false,
+        louéAt: admin.firestore.Timestamp.now()
+      });
+    } catch (e) {
+      console.error("[Action/loue] Erreur désactivation annonce:", e.message);
+    }
+
+    res.send(htmlRetour(
+      "🔒", "Bien marqué comme loué",
+      "Votre annonce a été marquée comme déjà louée.<br>Merci pour la mise à jour.",
+      "#5d4037"
+    ));
+
+    // Notifications en arrière-plan
+    (async () => {
+      try {
+        const ctx = await getContexteAction(result.data);
+        const { nomProprio, prenomDemandeur, numeroDemandeur, numAdmin, annonceId } = ctx;
+
+        if (numeroDemandeur) await sendWhatsApp(numeroDemandeur, msgAfterLoue({ prenomDemandeur }));
+        if (numAdmin)        await sendWhatsApp(numAdmin,        msgAfterLoueAdmin({ annonceId, nomProprio }));
+      } catch (err) {
+        console.error("[Action/loue] Notif erreur:", err.message);
+      }
+    })();
+
+  } catch (err) {
+    console.error("[Action/loue] Erreur:", err.message);
+    res.status(500).send(htmlRetour("❌", "Erreur serveur", "Réessayez plus tard.", "#c62828"));
+  }
+});
+
+app.get("/api/whatsapp/action/refuse", async (req, res) => {
+  const { token } = req.query;
+  try {
+    const result = await validateActionToken(token);
+    if (!result.valid) {
+      return res.status(410).send(htmlRetour("⚠️", "Lien non valide", result.reason, "#e65100"));
+    }
+    await markActionStatus(result.ref, "refused");
+
+    res.send(htmlRetour(
+      "❌", "Demande refusée",
+      "Votre refus a bien été enregistré.",
+      "#c62828"
+    ));
+
+    // Notifications en arrière-plan
+    (async () => {
+      try {
+        const ctx = await getContexteAction(result.data);
+        const { nomProprio, prenomDemandeur, numeroDemandeur, numAdmin, annonceId } = ctx;
+
+        if (numeroDemandeur) await sendWhatsApp(numeroDemandeur, msgAfterRefuse({ prenomDemandeur }));
+        if (numAdmin)        await sendWhatsApp(numAdmin,        msgAfterRefuseAdmin({ annonceId, nomProprio, prenomDemandeur }));
+      } catch (err) {
+        console.error("[Action/refuse] Notif erreur:", err.message);
+      }
+    })();
+
+  } catch (err) {
+    console.error("[Action/refuse] Erreur:", err.message);
+    res.status(500).send(htmlRetour("❌", "Erreur serveur", "Réessayez plus tard.", "#c62828"));
   }
 });
 
