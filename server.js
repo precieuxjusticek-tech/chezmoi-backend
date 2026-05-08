@@ -3,6 +3,7 @@ require("dotenv").config();
 /* ===================================================== */
 /* ================= IMPORTS =========================== */
 /* ===================================================== */
+const crypto = require("crypto");
 const express = require("express");
 const cors = require("cors");
 const admin = require("firebase-admin");
@@ -31,6 +32,28 @@ webpush.setVapidDetails(
   process.env.VAPID_PRIVATE_KEY
 );
 
+async function creerConfirmId(token) {
+  const confirmId = crypto.randomBytes(16).toString("hex");
+  const expireAt = admin.firestore.Timestamp.fromDate(
+    new Date(Date.now() + 2 * 60 * 1000)
+  );
+  await db.collection("confirm_store").doc(token).set({ confirmId, expireAt });
+  return confirmId;
+}
+
+async function validerConfirmId(token, confirmId) {
+  const ref = db.collection("confirm_store").doc(token);
+  const snap = await ref.get();
+  if (!snap.exists) return { valid: false, reason: "Session expirée ou invalide. Rouvrez le lien." };
+  const entry = snap.data();
+  if (entry.expireAt.toMillis() < Date.now()) {
+    await ref.delete();
+    return { valid: false, reason: "Session expirée (2 min). Rouvrez le lien." };
+  }
+  if (entry.confirmId !== confirmId) return { valid: false, reason: "Identifiant de confirmation invalide." };
+  await ref.delete(); // usage unique
+  return { valid: true };
+}
 
 /* ===================================================== */
 /* ================= INITIALISATION ==================== */
@@ -70,6 +93,17 @@ const upload = multer({
             cb(new Error("Seules les images sont autorisées"));
         }
     }
+});
+
+app.use((err, req, res, next) => {
+  if (err?.code === "LIMIT_FILE_SIZE") {
+    // Nettoyer les fichiers déjà uploadés par Multer
+    if (req.files) {
+      req.files.forEach(f => { try { fs.unlinkSync(f.path); } catch {} });
+    }
+    return res.status(413).json({ message: "Image trop lourde (max 20MB)" });
+  }
+  next(err);
 });
 
 // ===== SAUVEGARDER LA SUBSCRIPTION =====
@@ -313,248 +347,230 @@ app.post("/api/password-reset", async (req, res) => {
 /* ================= PUBLIER ANNONCE =================== */
 /* ===================================================== */
 app.post("/api/annonces", upload.array("images", 15), async (req, res) => {
-    try {
+  try {
 
-        const {
-            uid, titre, type_annonce, description, prix, ville, quartier,
-            douche, contact, repere, nbChambres, nbPieces, nbSalons, surface,
-            etage, eau, electricite, parking, gardien, caution, avanceMax,
-            nbDouches, charges, climatiseur, balcon, groupe_electrogene, forage, cuisine,
-            type_cuisine, toilettes, meuble, disponibilite, disponibiliteDate, wifi, fraisVisite,
-            type_sol, voirie, cloture, viabilisee, facade,
-            titre_propriete, negociable, delai_vente
-        } = req.body;
+    const {
+      uid, titre, type_annonce, description, prix, ville, quartier,
+      douche, contact, repere, nbChambres, nbPieces, nbSalons, surface,
+      etage, eau, electricite, parking, gardien, caution, avanceMax,
+      nbDouches, charges, climatiseur, balcon, groupe_electrogene, forage, cuisine,
+      type_cuisine, toilettes, meuble, disponibilite, disponibiliteDate, wifi, fraisVisite,
+      type_sol, voirie, cloture, viabilisee, facade,
+      titre_propriete, negociable, delai_vente
+    } = req.body;
 
-        if (!uid || !titre || !type_annonce || !description || !prix || !ville || !quartier || !contact) {
-            return res.status(400).json({ message: "Champs obligatoires manquants" });
-        }
-
-        if (Number(prix) <= 0) {
-            return res.status(400).json({ message: "Prix invalide" });
-        }
-
-        try { await admin.auth().getUser(uid); }
-        catch { return res.status(400).json({ message: "Utilisateur introuvable" }); }
-
-        // ======= EXPIRATION 30 JOURS =======
-        const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
-        const expireAt = admin.firestore.Timestamp.fromDate(new Date(Date.now() + THIRTY_DAYS));
-        const now = new Date();
-
-        // ======= UPLOAD IMAGES CLOUDINARY =======
-        const imagesUrls = [];
-        const imagesDeleteUrls = []; // On stocke les public_ids pour suppression
-
-        if (req.files && req.files.length > 0) {
-            console.log(`[Cloudinary] ${req.files.length} fichier(s) reçu(s)`);
-
-            for (const file of req.files) {
-                try {
-                    if (!fs.existsSync(file.path)) {
-                        console.error(`[Cloudinary] Fichier introuvable: ${file.path}`);
-                        continue;
-                    }
-
-                    console.log(`[Cloudinary] Upload de ${file.originalname}`);
-
-                    const result = await cloudinary.uploader.upload(file.path, {
-                        folder: "chezmoi",
-                        transformation: [
-                            { width: 900, crop: "limit" },
-                            { quality: "auto" }
-                        ]
-                    });
-
-                    if (result.secure_url) {
-                        imagesUrls.push(result.secure_url);
-                        imagesDeleteUrls.push(result.public_id); // public_id pour supprimer plus tard
-                        console.log(`[Cloudinary] ✅ URL: ${result.secure_url}`);
-                    }
-
-                } catch (err) {
-                    console.error(`[Cloudinary] Erreur pour ${file.originalname}:`, err.message);
-                } finally {
-                    try {
-                        if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
-                    } catch (e) {}
-                }
-            }
-
-            console.log(`[Cloudinary] Résultat: ${imagesUrls.length}/${req.files.length} images uploadées`);
-        }
-
-        
-        // ======= CRÉER ANNONCE DIRECTEMENT PUBLIÉE =======
-        const annonceRef = await db.collection("annonces").add({
-            uid,
-            titre,
-            type_annonce,
-            description,
-            prix,
-            ville,
-            quartier,
-            douche,
-            contact,
-            repere: repere || "",
-            nbChambres: nbChambres || "",
-            nbPieces: nbPieces || "",
-            nbSalons: nbSalons || "",
-            surface: surface || "",
-            etage: etage || "",
-            eau: eau || "",
-            electricite: electricite || "",
-            parking: parking || "",
-            gardien: gardien || "",
-            caution: caution || "",
-            avanceMax: avanceMax || "",
-            toilettes: toilettes || "",
-            meuble: meuble || "",
-            disponibilite: disponibilite || "",
-            disponibiliteDate: disponibiliteDate || "",
-            wifi: wifi || "",
-            nbDouches: nbDouches || "",
-            charges: charges || "",
-            climatiseur: climatiseur || "",
-            balcon: balcon || "",
-            groupe_electrogene: groupe_electrogene || "",
-            forage: forage || "",
-            cuisine: cuisine || "",
-            type_cuisine: type_cuisine || "",
-            fraisVisite: fraisVisite || "",
-            type_sol: type_sol || "",
-            voirie: voirie || "",
-            cloture: cloture || "",
-            viabilisee: viabilisee || "",
-            facade: facade || "",
-            titre_propriete: titre_propriete || "",
-            negociable: negociable || "",
-            delai_vente: delai_vente || "",
-
-            images: imagesUrls,
-            imagesDeleteUrls: imagesDeleteUrls,
-            statut: "published",           // publiée directement
-            statut_numero: "verrouille",
-            date_deblocage: "",
-            createdAt: admin.firestore.Timestamp.fromDate(now),
-            expireAt                        // 30 jours
-        });
-
-        // ===== NOTIFIER UNIQUEMENT LES USERS AVEC UNE ALERTE CORRESPONDANTE =====
-        try {
-            const typeAnnonce = titre?.toLowerCase().includes("vente") ? "vente" : "location";
-            
-            // Récupérer toutes les alertes du bon type
-            const alertesSnap = await db.collection("alertes")
-                .where("typeAlerte", "==", typeAnnonce).get();
-
-            for (const alerteDoc of alertesSnap.docs) {
-                const { uid: alerteUid, alerte } = alerteDoc.data();
-                if (alerteUid === uid) continue; // pas le propriétaire
-
-                // Vérifier si l'annonce correspond aux critères de l'alerte
-                const correspondre = (() => {
-                    if (alerte.ville && ville?.toLowerCase() !== alerte.ville.toLowerCase()) return false;
-                    if (alerte.types?.length && !alerte.types.some(t => type_annonce?.toLowerCase() === t.toLowerCase())) return false;
-                    if (alerte.quartiers?.length) {
-                        const q = (quartier || "").toLowerCase();
-                        if (!alerte.quartiers.some(aq => q.includes(aq.toLowerCase()))) return false;
-                    }
-                    const prixNum = Number(prix);
-                    if (alerte.budgetMin && prixNum < alerte.budgetMin) return false;
-                    if (alerte.budgetMax && prixNum > alerte.budgetMax) return false;
-                    if (alerte.meuble && meuble && alerte.meuble !== meuble) return false;
-                    if (alerte.wifi && wifi && alerte.wifi !== wifi) return false;
-                    if (alerte.climatiseur && climatiseur && alerte.climatiseur !== climatiseur) return false;
-                    return true;
-                })();
-
-                if (!correspondre) continue;
-
-                // Envoyer la notification
-                await envoyerNotificationPush(alerteUid, {
-                    title: `ChezMoi 🔔 — Nouveau bien ${typeAnnonce}`,
-                    body: `${type_annonce} à ${ville} — ${Number(prix).toLocaleString("fr-FR")} XAF`,
-                    annonceId: annonceRef.id,
-                    typeAlerte: typeAnnonce,
-                    count: 1
-                });
-            }
-        } catch (e) { /* silencieux */ }
-
-        res.status(201).json({
-            message: "Annonce publiée avec succès",
-            id: annonceRef.id
-        });
-
-    } catch (err) {
-        console.error("Erreur backend annonces :", err);
-        res.status(500).json({ message: err.message });
+    if (!uid || !titre || !type_annonce || !description || !prix || !ville || !quartier || !contact) {
+      return res.status(400).json({ message: "Champs obligatoires manquants" });
     }
+
+    if (Number(prix) <= 0) {
+      return res.status(400).json({ message: "Prix invalide" });
+    }
+
+    try { await admin.auth().getUser(uid); }
+    catch { return res.status(400).json({ message: "Utilisateur introuvable" }); }
+
+    // ======= EXPIRATION 30 JOURS =======
+    const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+    const expireAt = admin.firestore.Timestamp.fromDate(new Date(Date.now() + THIRTY_DAYS));
+    const now = new Date();
+
+    // ======= UPLOAD IMAGES CLOUDINARY =======
+    const imagesUrls = [];
+    const imagesDeleteUrls = []; // On stocke les public_ids pour suppression
+
+    if (req.files && req.files.length > 0) {
+      console.log(`[Cloudinary] ${req.files.length} fichier(s) reçu(s)`);
+
+      for (const file of req.files) {
+        try {
+          if (!fs.existsSync(file.path)) {
+            console.error(`[Cloudinary] Fichier introuvable: ${file.path}`);
+            continue;
+          }
+
+          console.log(`[Cloudinary] Upload de ${file.originalname}`);
+
+          const result = await cloudinary.uploader.upload(file.path, {
+            folder: "chezmoi",
+            transformation: [
+              { width: 900, crop: "limit" },
+              { quality: "auto" }
+            ]
+          });
+
+          if (result.secure_url) {
+            imagesUrls.push(result.secure_url);
+            imagesDeleteUrls.push(result.public_id); // public_id pour supprimer plus tard
+            console.log(`[Cloudinary] ✅ URL: ${result.secure_url}`);
+          }
+
+        } catch (err) {
+          console.error(`[Cloudinary] Erreur pour ${file.originalname}:`, err.message);
+        } finally {
+          try {
+            if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+          } catch (e) {}
+        }
+      }
+
+      console.log(`[Cloudinary] Résultat: ${imagesUrls.length}/${req.files.length} images uploadées`);
+    }
+
+    
+    // ======= CRÉER ANNONCE DIRECTEMENT PUBLIÉE =======
+    const annonceRef = await db.collection("annonces").add({
+      uid,
+      titre,
+      type_annonce,
+      description,
+      prix,
+      ville,
+      quartier,
+      douche,
+      contact,
+      repere: repere || "",
+      nbChambres: nbChambres || "",
+      nbPieces: nbPieces || "",
+      nbSalons: nbSalons || "",
+      surface: surface || "",
+      etage: etage || "",
+      eau: eau || "",
+      electricite: electricite || "",
+      parking: parking || "",
+      gardien: gardien || "",
+      caution: caution || "",
+      avanceMax: avanceMax || "",
+      toilettes: toilettes || "",
+      meuble: meuble || "",
+      disponibilite: disponibilite || "",
+      disponibiliteDate: disponibiliteDate || "",
+      wifi: wifi || "",
+      nbDouches: nbDouches || "",
+      charges: charges || "",
+      climatiseur: climatiseur || "",
+      balcon: balcon || "",
+      groupe_electrogene: groupe_electrogene || "",
+      forage: forage || "",
+      cuisine: cuisine || "",
+      type_cuisine: type_cuisine || "",
+      fraisVisite: fraisVisite || "",
+      type_sol: type_sol || "",
+      voirie: voirie || "",
+      cloture: cloture || "",
+      viabilisee: viabilisee || "",
+      facade: facade || "",
+      titre_propriete: titre_propriete || "",
+      negociable: negociable || "",
+      delai_vente: delai_vente || "",
+
+      images: imagesUrls,
+      imagesDeleteUrls: imagesDeleteUrls,
+      statut: "published",           // publiée directement
+      statut_numero: "verrouille",
+      date_deblocage: "",
+      createdAt: admin.firestore.Timestamp.fromDate(now),
+      expireAt                        // 30 jours
+    });
+
+    // ===== NOTIFIER UNIQUEMENT LES USERS AVEC UNE ALERTE CORRESPONDANTE =====
+    (async () => {
+      try {
+        const typeAnnonce = titre?.toLowerCase().includes("vente") ? "vente" : "location";
+        const alertesSnap = await db.collection("alertes")
+          .where("typeAlerte", "==", typeAnnonce).get();
+
+        const notifications = [];
+        for (const alerteDoc of alertesSnap.docs) {
+          const { uid: alerteUid, alerte } = alerteDoc.data();
+          if (alerteUid === uid) continue;
+
+          const correspondre = (() => {
+            if (alerte.ville && ville?.toLowerCase() !== alerte.ville.toLowerCase()) return false;
+            if (alerte.types?.length && !alerte.types.some(t => type_annonce?.toLowerCase() === t.toLowerCase())) return false;
+            if (alerte.quartiers?.length) {
+              const q = (quartier || "").toLowerCase();
+              if (!alerte.quartiers.some(aq => q.includes(aq.toLowerCase()))) return false;
+            }
+            const prixNum = Number(prix);
+            if (alerte.budgetMin && prixNum < alerte.budgetMin) return false;
+            if (alerte.budgetMax && prixNum > alerte.budgetMax) return false;
+            if (alerte.meuble && meuble && alerte.meuble !== meuble) return false;
+            if (alerte.wifi && wifi && alerte.wifi !== wifi) return false;
+            if (alerte.climatiseur && climatiseur && alerte.climatiseur !== climatiseur) return false;
+            return true;
+          })();
+
+          if (!correspondre) continue;
+
+          notifications.push(envoyerNotificationPush(alerteUid, {
+            title: `ChezMoi 🔔 — Nouveau bien ${typeAnnonce}`,
+            body: `${type_annonce} à ${ville} — ${Number(prix).toLocaleString("fr-FR")} XAF`,
+            annonceId: annonceRef.id,
+            typeAlerte: typeAnnonce,
+            count: 1
+          }));
+        }
+        await Promise.allSettled(notifications);
+      } catch (e) { /* silencieux */ }
+    })();
+
+    res.status(201).json({
+      message: "Annonce publiée avec succès",
+      id: annonceRef.id
+    });
+
+  } catch (err) {
+    console.error("Erreur backend annonces :", err);
+    res.status(500).json({ message: err.message });
+  }
 });
 
 /* ===================================================== */
 /* ================= OBTENIR ANNONCES ================= */
 /* ===================================================== */
 app.get("/api/annonces", async (req, res) => {
-    try {
-        const now = admin.firestore.Timestamp.now();
+  try {
+      const now = admin.firestore.Timestamp.now();
 
-        // Supprime annonces expirées
-        const expiredSnapshot = await db.collection("annonces").where("expireAt", "<=", now).get();
-        for (const doc of expiredSnapshot.docs) {
-            const data = doc.data();
+      // Supprime annonces expirées
+      purgerAnnoncesExpirees();
 
-            if (data.imagesDeleteUrls && data.imagesDeleteUrls.length > 0) {
-                for (const publicId of data.imagesDeleteUrls) {
-                    try {
-                        await cloudinary.uploader.destroy(publicId);
-                    } catch(err) {
-                        console.error("Erreur suppression image Cloudinary:", err);
-                    }
-                }
-            }
+      // Récupère annonces valides
+      const snapshot = await db.collection("annonces")
+          .where("expireAt", ">", now)
+          .where("statut", "==", "published")
+          .get();
+      const annonces = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-            // Supprimer favoris liés
-            const favSnapshot = await db.collection("favorites")
-                .where("annonceId", "==", doc.id)
-                .get();
-            for (const favDoc of favSnapshot.docs) {
-                await favDoc.ref.delete();
-            }
+      res.json(annonces);
 
-            await doc.ref.delete();
-        }
-
-        // Récupère annonces valides
-        const snapshot = await db.collection("annonces")
-            .where("expireAt", ">", now)
-            .where("statut", "==", "published")
-            .get();
-        const annonces = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-
-        res.json(annonces);
-
-    } catch(err) {
-        console.error("Erreur backend get annonces :", err);
-        res.status(500).json({ message: err.message });
-    }
+  } catch(err) {
+      console.error("Erreur backend get annonces :", err);
+      res.status(500).json({ message: err.message });
+  }
 });
+
+const ADMIN_SECRET = process.env.ADMIN_SECRET;
 
 // ================= GET TOUS LES COMPTES =================
 app.get("/api/user/accounts", async (req, res) => {
-    try {
-        const snapshot = await db.collection("users").get();
-        const users = snapshot.docs.map(doc => ({
-            uid: doc.id,
-            nom: doc.data().nom,
-            email: doc.data().email,
-            avatar: doc.data().avatar || "image/avatar.png"
-        }));
-        res.json(users);
-    } catch (err) {
-        console.error("Erreur récupération comptes :", err);
-        res.status(500).json({ message: err.message });
-    }
+  if (!ADMIN_SECRET || req.headers["x-admin-secret"] !== ADMIN_SECRET) {
+    return res.status(403).json({ message: "Non autorisé" });
+  }
+  try {
+      const snapshot = await db.collection("users").get();
+      const users = snapshot.docs.map(doc => ({
+          uid: doc.id,
+          nom: doc.data().nom,
+          email: doc.data().email,
+          avatar: doc.data().avatar || "image/avatar.png"
+      }));
+      res.json(users);
+  } catch (err) {
+      console.error("Erreur récupération comptes :", err);
+      res.status(500).json({ message: err.message });
+  }
 });
 
 /* ===================================================== */
@@ -634,10 +650,16 @@ app.post("/api/favorites", async (req, res) => {
 });
 
 // Supprimer une annonce des favoris
+
 app.delete("/api/favorites", async (req, res) => {
     try {
-        const { uid, annonceId } = req.body;
+        const uid = req.body?.uid || req.query?.uid;
+        const annonceId = req.body?.annonceId || req.query?.annonceId;
         if (!uid || !annonceId) return res.status(400).json({ message: "UID et annonceId requis" });
+
+        // Vérifier que l'utilisateur existe (protection minimale sans auth middleware)
+        try { await admin.auth().getUser(uid); }
+        catch { return res.status(403).json({ message: "Utilisateur invalide" }); }
 
         const favSnapshot = await db.collection("favorites")
             .where("uid", "==", uid)
@@ -645,15 +667,9 @@ app.delete("/api/favorites", async (req, res) => {
             .get();
 
         if (favSnapshot.empty) return res.status(404).json({ message: "Favori introuvable" });
-
-        for (const doc of favSnapshot.docs) {
-            await doc.ref.delete();
-        }
-
+        for (const doc of favSnapshot.docs) await doc.ref.delete();
         res.json({ message: "Favori supprimé" });
-
     } catch (error) {
-        console.error("Erreur suppression favoris :", error);
         res.status(500).json({ message: error.message });
     }
 });
@@ -926,9 +942,9 @@ app.get("/api/contact-requests/status", async (req, res) => {
 // POST — Créer une demande de contact
 /* ======================== */
 app.post("/api/contact-requests", async (req, res) => {
-  const { annonceId, ownerId, userId, prenom, whatsapp, urgence, budget } = req.body;
+  const { annonceId, ownerId, userId, prenom, whatsapp, urgence, budget, visite, message } = req.body;
 
-  if (!annonceId || !userId || !prenom || !whatsapp || !urgence || !budget) {
+  if (!annonceId || !userId || !prenom || !whatsapp || !urgence || !budget || !visite || !message) {
     return res.status(400).json({ message: "Champs manquants" });
   }
 
@@ -966,6 +982,8 @@ app.post("/api/contact-requests", async (req, res) => {
       whatsapp,
       urgence,
       budget,
+      visite,
+      message,
       createdAt: admin.firestore.Timestamp.now(),
       status: "nouvelle"
     });
@@ -995,6 +1013,19 @@ app.post("/api/contact-requests", async (req, res) => {
 
         const compteur = await getCompteurJournalier(db, annonceId);
 
+        // Calcul score identique à celui du frontend
+        function calcScore(urgence, budget, visite, message) {
+          let s = 0;
+          s += ({ IMMEDIAT: 35, "1_2_JOURS": 30, CETTE_SEMAINE: 20, PLUS_TARD: 5 }[urgence] || 0);
+          s += ({ OK: 35, NEGO: 20, PAS_PRET: 0 }[budget] || 0);
+          s += ({ AUJOURD_HUI: 20, DEMAIN: 15, CETTE_SEMAINE: 8, PAS_SUR: 0 }[visite] || 0);
+          if (message && message.trim().length >= 20) s += 10;
+          else if (message && message.trim().length > 0) s += 4;
+          return Math.min(s, 100);
+        }
+
+        const score = calcScore(urgence, budget, visite, message);
+
         const contexte = {
           titre:           annonce.titre || "Annonce",
           prix:            annonce.prix  || "0",
@@ -1007,11 +1038,14 @@ app.post("/api/contact-requests", async (req, res) => {
           numeroDemandeur: whatsapp,
           urgence,
           budget,
+          visite,
+          message,
+          score,
           token,
           compteur
         };
 
-        // Formater les numéros (UltraMsg attend le format international sans +)
+        // Formater les numéros (le format international sans +)
         const numProprio    = String(contexte.numeroProprio).replace(/\D/g, "");
         const numDemandeur  = String(whatsapp).replace(/\D/g, "");
         const numAdmin      = String(process.env.ULTRAMSG_ADMIN_PHONE || "").replace(/\D/g, "");
@@ -1094,55 +1128,311 @@ async function validateActionToken(token) {
 }
 
 async function markActionStatus(ref, status) {
-  await ref.update({
-    status,
-    processedAt: admin.firestore.Timestamp.now()
+  await db.runTransaction(async (transaction) => {
+    const snap = await transaction.get(ref);
+
+    if (!snap.exists) {
+      throw Object.assign(new Error("Ce lien n'existe pas."), { alreadyUsed: true });
+    }
+
+    const current = snap.data();
+
+    if (current.status !== "pending") {
+      const labels = {
+        accepted:    "✅ Vous avez déjà accepté ce locataire.",
+        closed_loue: "🔒 Vous avez déjà marqué ce bien comme loué.",
+        refused:     "❌ Vous avez déjà refusé cette demande."
+      };
+      throw Object.assign(
+        new Error(labels[current.status] || "Ce lien a déjà été utilisé."),
+        { alreadyUsed: true }
+      );
+    }
+
+    transaction.update(ref, {
+      status,
+      processedAt: admin.firestore.Timestamp.now()
+    });
   });
 }
 
 function htmlRetour(emoji, titre, message, couleur) {
+  // Mapper couleur hex → config sémantique
+  const isSuccess = couleur === "#2e7d32" || couleur === "#1b5e20";
+  const isWarning = couleur === "#e65100" || couleur === "#f57c00";
+  const isInfo    = couleur === "#0d47a1"  || couleur === "#1565c0";
+  // Sinon → danger (rouge, par défaut)
+
+  const colorVar = isSuccess ? "var(--color-text-success)"
+                 : isWarning ? "var(--color-text-warning)"
+                 : isInfo    ? "var(--color-text-info)"
+                 :             "var(--color-text-danger)";
+
+  const bgVar    = isSuccess ? "var(--color-background-success)"
+                 : isWarning ? "var(--color-background-warning)"
+                 : isInfo    ? "var(--color-background-info)"
+                 :             "var(--color-background-danger)";
+
+  const borderVar = isSuccess ? "var(--color-border-success)"
+                  : isWarning ? "var(--color-border-warning)"
+                  : isInfo    ? "var(--color-border-info)"
+                  :             "var(--color-border-danger)";
+
   return `<!DOCTYPE html>
-<html lang="fr">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ChezMoi — Action enregistrée</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #f5f5f5;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 100vh;
-      padding: 20px;
-    }
-    .card {
-      background: #fff;
-      border-radius: 20px;
-      padding: 40px 30px;
-      max-width: 380px;
-      width: 100%;
-      text-align: center;
-      box-shadow: 0 8px 30px rgba(0,0,0,0.10);
-    }
-    .emoji { font-size: 56px; margin-bottom: 18px; }
-    .titre { font-size: 20px; font-weight: 700; color: ${couleur}; margin-bottom: 12px; }
-    .message { font-size: 15px; color: #555; line-height: 1.6; }
-    .brand { margin-top: 32px; font-size: 13px; color: #bbb; font-weight: 500; }
-    .dot { color: #fd802e; font-weight: 800; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="emoji">${emoji}</div>
-    <div class="titre">${titre}</div>
-    <div class="message">${message}</div>
-    <div class="brand">Chez<span class="dot">Moi</span> &mdash; Immobilier au Congo</div>
-  </div>
-</body>
-</html>`;
+  <html lang="fr">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+      <title>ChezMoi</title>
+      <style>
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+          background: #f0f2f5;
+          min-height: 100vh;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 20px;
+        }
+
+        .card {
+          background: #ffffff;
+          border-radius: 24px;
+          padding: 0;
+          max-width: 360px;
+          width: 100%;
+          overflow: hidden;
+          box-shadow: 0 2px 24px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.04);
+          animation: slideUp 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+        }
+
+        @keyframes slideUp {
+          from { opacity: 0; transform: translateY(24px) scale(0.97); }
+          to   { opacity: 1; transform: translateY(0)    scale(1);    }
+        }
+
+        .card-header {
+          background: ${bgVar};
+          border-bottom: 1px solid ${borderVar};
+          padding: 32px 28px 28px;
+          text-align: center;
+        }
+
+        .icon-wrap {
+          width: 64px;
+          height: 64px;
+          border-radius: 50%;
+          border: 2px solid ${borderVar};
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          margin: 0 auto 16px;
+          font-size: 32px;
+          animation: popIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) 0.15s both;
+        }
+
+        @keyframes popIn {
+          from { opacity: 0; transform: scale(0.5); }
+          to   { opacity: 1; transform: scale(1);   }
+        }
+
+        .card-header h1 {
+          font-size: 18px;
+          font-weight: 700;
+          color: ${colorVar};
+          line-height: 1.3;
+          letter-spacing: -0.2px;
+        }
+
+        .card-body {
+          padding: 24px 28px 28px;
+          text-align: center;
+        }
+
+        .message {
+          font-size: 15px;
+          line-height: 1.65;
+          color: #555e6c;
+        }
+
+        .divider {
+          width: 40px;
+          height: 2px;
+          background: #eceef0;
+          border-radius: 2px;
+          margin: 20px auto;
+        }
+
+        .btn-home {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          width: 100%;
+          padding: 15px 20px;
+          background: #fd802e;
+          color: #ffffff;
+          border: none;
+          border-radius: 14px;
+          font-size: 15px;
+          font-weight: 700;
+          text-decoration: none;
+          cursor: pointer;
+          transition: transform 0.15s ease, background 0.15s ease;
+          letter-spacing: 0.1px;
+        }
+
+        .btn-home:active {
+          transform: scale(0.97);
+          background: #e56d20;
+        }
+
+        .btn-home svg {
+          width: 18px;
+          height: 18px;
+          flex-shrink: 0;
+        }
+
+        .brand {
+          margin-top: 20px;
+          font-size: 12px;
+          color: #b0b8c4;
+          letter-spacing: 0.3px;
+        }
+
+        .brand strong {
+          color: #fd802e;
+          font-weight: 800;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <div class="card-header">
+          <div class="icon-wrap">${emoji}</div>
+          <h1>${titre}</h1>
+        </div>
+        <div class="card-body">
+          <p class="message">${message}</p>
+          <div class="divider"></div>
+          <a href="https://chezmoi.cg" class="btn-home">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 9.5L12 3l9 6.5V20a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9.5z"/>
+              <path d="M9 21V12h6v9"/>
+            </svg>
+            Retour sur ChezMoi
+          </a>
+          <p class="brand">Chez<strong>Moi</strong> &mdash; Immobilier au Congo</p>
+        </div>
+      </div>
+    </body>
+  </html>`;
+}
+
+// ← NOUVELLE FONCTION : page de confirmation avant action
+
+function htmlConfirmation({ token, confirmId, action, emoji, titre, message, couleurBtn }) {
+  const backendUrl = process.env.BACKEND_URL || "https://chezmoi-backend.onrender.com";
+  return `<!DOCTYPE html>
+  <html lang="fr">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>ChezMoi — Confirmation</title>
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          background: #f5f5f5;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 100vh;
+          padding: 20px;
+        }
+        .card {
+          background: #fff;
+          border-radius: 20px;
+          padding: 40px 28px;
+          max-width: 380px;
+          width: 100%;
+          text-align: center;
+          box-shadow: 0 8px 30px rgba(0,0,0,0.10);
+        }
+        .emoji { font-size: 56px; margin-bottom: 18px; }
+        .titre { font-size: 20px; font-weight: 700; color: #222; margin-bottom: 12px; }
+        .message { font-size: 15px; color: #666; line-height: 1.6; margin-bottom: 32px; }
+        .btn {
+          display: block;
+          width: 100%;
+          padding: 16px;
+          border: none;
+          border-radius: 12px;
+          font-size: 16px;
+          font-weight: 700;
+          cursor: pointer;
+          margin-bottom: 12px;
+          transition: opacity 0.2s;
+        }
+        .btn:active { opacity: 0.8; }
+        .btn-confirm { background: ${couleurBtn}; color: #fff; }
+        .btn-cancel  { background: #f0f0f0; color: #555; }
+        .status { margin-top: 16px; font-size: 14px; color: #888; min-height: 20px; }
+        .brand { margin-top: 28px; font-size: 13px; color: #bbb; font-weight: 500; }
+        .dot { color: #fd802e; font-weight: 800; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <div class="emoji">${emoji}</div>
+        <div class="titre">${titre}</div>
+        <div class="message">${message}</div>
+
+        <button class="btn btn-confirm" onclick="confirmer()">✔ Confirmer</button>
+        <button class="btn btn-cancel"  onclick="annuler()">✖ Annuler</button>
+
+        <div class="status" id="status"></div>
+        <div class="brand">Chez<span class="dot">Moi</span> &mdash; Immobilier au Congo</div>
+      </div>
+
+      <script>
+        async function confirmer() {
+          document.getElementById("status").textContent = "⏳ Traitement en cours...";
+          document.querySelectorAll(".btn").forEach(b => b.disabled = true);
+
+          try {
+            const res = await fetch("${backendUrl}/api/whatsapp/action/${action}", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ token: "${token}", confirmId: "${confirmId}" })
+            });
+            const data = await res.json();
+
+            if (data.ok) {
+              document.getElementById("status").textContent = "✅ Action enregistrée avec succès !";
+              document.querySelector(".titre").textContent = "Merci !";
+              document.querySelector(".message").textContent = "Votre choix a bien été pris en compte.";
+            } else {
+              document.getElementById("status").textContent = "⚠️ " + (data.reason || "Erreur, réessayez.");
+              document.querySelectorAll(".btn").forEach(b => b.disabled = false);
+            }
+          } catch (e) {
+            document.getElementById("status").textContent = "❌ Problème réseau, réessayez.";
+            document.querySelectorAll(".btn").forEach(b => b.disabled = false);
+          }
+        }
+
+        function annuler() {
+          document.querySelector(".titre").textContent = "Action annulée";
+          document.querySelector(".message").textContent = "Vous pouvez fermer cette page.";
+          document.querySelectorAll(".btn").forEach(b => b.style.display = "none");
+          document.getElementById("status").textContent = "";
+        }
+      </script>
+    </body>
+  </html>`;
 }
 
 async function getContexteAction(data) {
@@ -1178,10 +1468,13 @@ async function getContexteAction(data) {
   };
 }
 
-/* ===================================================== */
-/* ============ WHATSAPP ACTION ROUTES ================= */
-/* ===================================================== */
+// ===================================================
+// WHATSAPP ACTION ROUTES — VERSION AVEC PAGE DE CONFIRMATION
+// GET = affiche la page HTML (aucune action Firestore)
+// POST = exécute l'action réelle (déclenché par le bouton CONFIRMER)
+// ===================================================
 
+// ===== ACCEPT =====
 app.get("/api/whatsapp/action/accept", async (req, res) => {
   const { token } = req.query;
   try {
@@ -1189,20 +1482,42 @@ app.get("/api/whatsapp/action/accept", async (req, res) => {
     if (!result.valid) {
       return res.status(410).send(htmlRetour("⚠️", "Lien non valide", result.reason, "#e65100"));
     }
+    const confirmId = await creerConfirmId(token);
+    // ← AUCUNE action Firestore ici, on affiche juste la page
+    res.send(htmlConfirmation({
+      token,
+      confirmId, 
+      action: "accept",
+      emoji: "✅",
+      titre: "Accepter ce locataire ?",
+      message: "En confirmant, le locataire recevra vos coordonnées et sera notifié de votre accord.",
+      couleurBtn: "#2e7d32"
+    }));
+  } catch (err) {
+    res.status(500).send(htmlRetour("❌", "Erreur serveur", "Réessayez plus tard.", "#c62828"));
+  }
+});
+
+app.post("/api/whatsapp/action/accept", async (req, res) => {
+  const { token, confirmId } = req.body;
+  try {
+    const result = await validateActionToken(token);
+    if (!result.valid) {
+      return res.status(410).json({ ok: false, reason: result.reason });
+    }
+    const confirmCheck = await validerConfirmId(token, confirmId);
+    if (!confirmCheck.valid) {
+      return res.status(403).json({ ok: false, reason: confirmCheck.reason });
+    }
     await markActionStatus(result.ref, "accepted");
 
-    res.send(htmlRetour(
-      "✅", "Locataire accepté !",
-      "Votre choix a bien été enregistré par ChezMoi.<br>Le locataire sera notifié.",
-      "#2e7d32"
-    ));
+    res.json({ ok: true });
 
-    // Notifications en arrière-plan
+    // Notifications en arrière-plan (identique à avant)
     (async () => {
       try {
         const ctx = await getContexteAction(result.data);
         const { nomProprio, numeroProprio, prenomDemandeur, numeroDemandeur, numAdmin, annonceId, quartier, prix } = ctx;
-
         if (numeroDemandeur) await sendWhatsApp(numeroDemandeur, msgAfterAccept({ prenomDemandeur, numeroDemandeur, nomProprio, numeroProprio, quartier, prix }));
         if (numeroProprio)   await sendWhatsApp(numeroProprio,   msgAfterAcceptProprio({ nomProprio, prenomDemandeur, numeroDemandeur, quartier, prix }));
         if (numAdmin)        await sendWhatsApp(numAdmin,        msgAfterAcceptAdmin({ annonceId, nomProprio, prenomDemandeur }));
@@ -1210,13 +1525,15 @@ app.get("/api/whatsapp/action/accept", async (req, res) => {
         console.error("[Action/accept] Notif erreur:", err.message);
       }
     })();
-
   } catch (err) {
-    console.error("[Action/accept] Erreur:", err.message);
-    res.status(500).send(htmlRetour("❌", "Erreur serveur", "Réessayez plus tard.", "#c62828"));
+    if (err.alreadyUsed) {
+      return res.status(410).json({ ok: false, reason: err.message });
+    }
+    res.status(500).json({ ok: false, reason: "Erreur serveur" });
   }
 });
 
+// ===== LOUE =====
 app.get("/api/whatsapp/action/loue", async (req, res) => {
   const { token } = req.query;
   try {
@@ -1224,9 +1541,35 @@ app.get("/api/whatsapp/action/loue", async (req, res) => {
     if (!result.valid) {
       return res.status(410).send(htmlRetour("⚠️", "Lien non valide", result.reason, "#e65100"));
     }
+    const confirmId = await creerConfirmId(token);
+    res.send(htmlConfirmation({
+      token,
+      confirmId,
+      action: "loue",
+      emoji: "🔒",
+      titre: "Marquer ce bien comme loué ?",
+      message: "En confirmant, votre annonce sera désactivée et le locataire sera notifié.",
+      couleurBtn: "#5d4037"
+    }));
+  } catch (err) {
+    res.status(500).send(htmlRetour("❌", "Erreur serveur", "Réessayez plus tard.", "#c62828"));
+  }
+});
+
+app.post("/api/whatsapp/action/loue", async (req, res) => {
+  const { token, confirmId } = req.body;
+  try {
+    const result = await validateActionToken(token);
+    if (!result.valid) {
+      return res.status(410).json({ ok: false, reason: result.reason });
+    }
+
+    const confirmCheck = await validerConfirmId(token, confirmId);
+    if (!confirmCheck.valid) {
+      return res.status(403).json({ ok: false, reason: confirmCheck.reason });
+    }
     await markActionStatus(result.ref, "closed_loue");
 
-    // Désactiver l'annonce en base
     try {
       await db.collection("annonces").doc(result.data.annonceId).update({
         statut: "loue",
@@ -1237,31 +1580,27 @@ app.get("/api/whatsapp/action/loue", async (req, res) => {
       console.error("[Action/loue] Erreur désactivation annonce:", e.message);
     }
 
-    res.send(htmlRetour(
-      "🔒", "Bien marqué comme loué",
-      "Votre annonce a été marquée comme déjà louée.<br>Merci pour la mise à jour.",
-      "#5d4037"
-    ));
+    res.json({ ok: true });
 
-    // Notifications en arrière-plan
     (async () => {
       try {
         const ctx = await getContexteAction(result.data);
         const { nomProprio, prenomDemandeur, numeroDemandeur, numAdmin, annonceId } = ctx;
-
         if (numeroDemandeur) await sendWhatsApp(numeroDemandeur, msgAfterLoue({ prenomDemandeur }));
         if (numAdmin)        await sendWhatsApp(numAdmin,        msgAfterLoueAdmin({ annonceId, nomProprio }));
       } catch (err) {
         console.error("[Action/loue] Notif erreur:", err.message);
       }
     })();
-
   } catch (err) {
-    console.error("[Action/loue] Erreur:", err.message);
-    res.status(500).send(htmlRetour("❌", "Erreur serveur", "Réessayez plus tard.", "#c62828"));
+    if (err.alreadyUsed) {
+      return res.status(410).json({ ok: false, reason: err.message });
+    }
+    res.status(500).json({ ok: false, reason: "Erreur serveur" });
   }
 });
 
+// ===== REFUSE =====
 app.get("/api/whatsapp/action/refuse", async (req, res) => {
   const { token } = req.query;
   try {
@@ -1269,30 +1608,66 @@ app.get("/api/whatsapp/action/refuse", async (req, res) => {
     if (!result.valid) {
       return res.status(410).send(htmlRetour("⚠️", "Lien non valide", result.reason, "#e65100"));
     }
+    const confirmId = await creerConfirmId(token);
+    res.send(htmlConfirmation({
+      token,
+      confirmId,
+      action: "refuse",
+      emoji: "❌",
+      titre: "Refuser cette demande ?",
+      message: "En confirmant, le locataire sera notifié que vous n'êtes pas disponible.",
+      couleurBtn: "#c62828"
+    }));
+  } catch (err) {
+    res.status(500).send(htmlRetour("❌", "Erreur serveur", "Réessayez plus tard.", "#c62828"));
+  }
+});
+
+app.post("/api/whatsapp/action/refuse", async (req, res) => {
+  const { token, confirmId } = req.body;
+  try {
+    const result = await validateActionToken(token);
+    if (!result.valid) {
+      return res.status(410).json({ ok: false, reason: result.reason });
+    }
+
+    const confirmCheck = await validerConfirmId(token, confirmId);
+    if (!confirmCheck.valid) {
+      return res.status(403).json({ ok: false, reason: confirmCheck.reason });
+    }
     await markActionStatus(result.ref, "refused");
 
-    res.send(htmlRetour(
-      "❌", "Demande refusée",
-      "Votre refus a bien été enregistré.",
-      "#c62828"
-    ));
+    res.json({ ok: true });
 
-    // Notifications en arrière-plan
     (async () => {
       try {
         const ctx = await getContexteAction(result.data);
         const { nomProprio, prenomDemandeur, numeroDemandeur, numAdmin, annonceId } = ctx;
-
         if (numeroDemandeur) await sendWhatsApp(numeroDemandeur, msgAfterRefuse({ prenomDemandeur }));
         if (numAdmin)        await sendWhatsApp(numAdmin,        msgAfterRefuseAdmin({ annonceId, nomProprio, prenomDemandeur }));
       } catch (err) {
         console.error("[Action/refuse] Notif erreur:", err.message);
       }
     })();
-
   } catch (err) {
-    console.error("[Action/refuse] Erreur:", err.message);
-    res.status(500).send(htmlRetour("❌", "Erreur serveur", "Réessayez plus tard.", "#c62828"));
+    if (err.alreadyUsed) {
+      return res.status(410).json({ ok: false, reason: err.message });
+    }
+    res.status(500).json({ ok: false, reason: "Erreur serveur" });
+  }
+});
+
+// ===== WHATSAPP PROFIL FAIBLE (lead score < 40) =====
+app.post("/api/whatsapp-profil-faible", async (req, res) => {
+  const { phone, message } = req.body;
+  if (!phone || !message) return res.status(400).json({ message: "Données manquantes" });
+
+  try {
+    const numPropre = String(phone).replace(/\D/g, "");
+    await sendWhatsApp(numPropre, message);
+    res.json({ message: "Message profil faible envoyé" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 });
 
@@ -1319,5 +1694,39 @@ app.put("/api/annonces/:id", async (req, res) => {
 /* ================== LANCEMENT SERVEUR =============== */
 /* ===================================================== */
 app.listen(PORT, () => {
-    console.log(`Backend ChezMoi lancé sur ${PORT}`);
+  console.log(`Backend ChezMoi lancé sur ${PORT}`);
 });
+
+const BATCH_DELETE_LIMIT = 20; // sécurité anti-timeout
+
+async function purgerAnnoncesExpirees() {
+  try {
+    const now = admin.firestore.Timestamp.now();
+    const expiredSnapshot = await db.collection("annonces")
+      .where("expireAt", "<=", now)
+      .limit(BATCH_DELETE_LIMIT)
+      .get();
+
+    if (expiredSnapshot.empty) return;
+
+    for (const doc of expiredSnapshot.docs) {
+      const data = doc.data();
+      if (data.imagesDeleteUrls?.length) {
+        for (const publicId of data.imagesDeleteUrls) {
+          try { await cloudinary.uploader.destroy(publicId); } catch {}
+        }
+      }
+      const favSnapshot = await db.collection("favorites")
+        .where("annonceId", "==", doc.id).get();
+      for (const favDoc of favSnapshot.docs) await favDoc.ref.delete();
+      await doc.ref.delete();
+    }
+    console.log(`[Purge] ${expiredSnapshot.size} annonces expirées supprimées`);
+  } catch (err) {
+    console.error("[Purge] Erreur:", err.message);
+  }
+}
+
+// Job de purge toutes les heures
+setInterval(purgerAnnoncesExpirees, 60 * 60 * 1000);
+purgerAnnoncesExpirees(); // lancement immédiat au démarrage

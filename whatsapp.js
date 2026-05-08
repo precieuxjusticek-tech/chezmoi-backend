@@ -1,5 +1,5 @@
 // ===================================================
-// SERVICE WHATSAPP — UltraMsg
+// SERVICE WHATSAPP — BOT
 // ===================================================
 const fetch  = require("node-fetch");
 const crypto = require("crypto");
@@ -7,7 +7,7 @@ const crypto = require("crypto");
 // ===================================================
 // NORMALISATION NUMÉRO CONGO
 // ===================================================
-const WHATSAPP_BOT_URL = process.env.WHATSAPP_BOT_URL || "http://localhost:3001/send-message";
+const WHATSAPP_BOT_URL = process.env.WHATSAPP_BOT_URL;
 
 function normaliserNumero(phone) {
   let num = String(phone || "").replace(/\D/g, "");
@@ -123,110 +123,424 @@ async function creerActionRequest(db, { annonceId, ownerUid, requesterUid }) {
 /**
  * Message propriétaire AVEC liens d'action
  */
-function msgProprietaire({ nomProprio, titre, prix, ville, prenomDemandeur, urgence, budget, token, compteur }) {
+function msgProprietaire({ nomProprio, titre, prix, ville, quartier, prenomDemandeur, urgence, budget, visite, message, score, token, compteur }) {
   const backendUrl = process.env.BACKEND_URL || "https://chezmoi-backend.onrender.com";
-  return `Salut ${nomProprio} 👋 C'est ChezMoi !
 
-  Un locataire sérieux veut ton bien :
-  🏠 ${titre} - ${Number(prix).toLocaleString("fr-FR")} FC - ${ville}
-  👤 ${prenomDemandeur} - Cherche ${urgence} - Budget ${budget}
+  const niveauLabel = score >= 71 ? "🟢 Profil A — Très sérieux"
+                    : score >= 41 ? "🟡 Profil B — Sérieux"
+                    :               "🔴 Profil C — Moyen";
 
-  ━━━━━━━━━━━━━━
-  👉 ACTION REQUISE : clique sur un choix ci-dessous
-  ━━━━━━━━━━━━━━
+  const urgenceLabel = {
+    "IMMEDIAT":      "⚡ Immédiat",
+    "1_2_JOURS":     "🔥 1–2 jours",
+    "CETTE_SEMAINE": "📅 Cette semaine",
+    "PLUS_TARD":     "👀 Exploration"
+  }[urgence] || urgence;
 
-  🟢 [ J'ACCEPTE CE LOCATAIRE ]
+  const budgetLabel = {
+    "OK":       "✅ Budget confirmé",
+    "NEGO":     "🤝 À négocier",
+    "PAS_PRET": "⏳ Pas encore prêt"
+  }[budget] || budget;
+
+  const visiteLabel = {
+    "AUJOURD_HUI":  "Aujourd'hui",
+    "DEMAIN":       "Demain",
+    "CETTE_SEMAINE":"Cette semaine",
+    "PAS_SUR":      "Pas encore sûr"
+  }[visite] || visite || "—";
+
+  const ligneMessage = message && message.trim()
+    ? `\n✍️ Message : "${message.trim()}"`
+    : "";
+
+  return `Bonjour ${nomProprio} 👋
+
+  ChezMoi vous transmet une demande de contact qualifiée pour votre annonce.
+
+  ━━━━━━━━━━━━━━━
+  🏠 VOTRE ANNONCE
+  ━━━━━━━━━━━━━━━
+  📌 ${titre}
+  📍 ${quartier}, ${ville}
+  💰 ${Number(prix).toLocaleString("fr-FR")} XAF
+
+  ━━━━━━━━━━━━━━━
+  👤 PROFIL LOCATAIRE
+  ━━━━━━━━━━━━━━━
+  Prénom : ${prenomDemandeur}
+  Emménagement : ${urgenceLabel}
+  Visite : ${visiteLabel}
+  Budget : ${budgetLabel}${ligneMessage}
+
+  ━━━━━━━━━━━━━━━
+  📊 ANALYSE CHEZMOI
+  ━━━━━━━━━━━━━━━
+  Score de sérieux : ${score}/100
+  Niveau : ${niveauLabel}
+  Demande analysée automatiquement par ChezMoi.
+
+  ━━━━━━━━━━━━━━━
+  👉 ACTION REQUISE
+  ━━━━━━━━━━━━━━━
+  ⚠️ Choisissez une option ci-dessous. Le numéro du locataire sera révélé uniquement si vous acceptez.
+
+  🟢 J'ACCEPTE — voir son contact
   ${backendUrl}/api/whatsapp/action/accept?token=${token}
 
-  🟠 [ BIEN DÉJÀ LOUÉ ]
+  🔒 BIEN DÉJÀ LOUÉ
   ${backendUrl}/api/whatsapp/action/loue?token=${token}
 
-  🔴 [ PAS INTÉRESSÉ ]
+  ❌ PAS INTÉRESSÉ
   ${backendUrl}/api/whatsapp/action/refuse?token=${token}
 
-  ⏳ Un seul clic suffit. Lien valide 24h.
-  ${compteur}/5 demandes aujourd'hui.`;
+  ⏳ Lien valide 24h · ${compteur}/5 demandes aujourd'hui
+  ChezMoi — Immobilier au Congo 🇨🇬`;
 }
 
-function msgAdmin({ titre, annonceId, prix, nomProprio, numeroProprio, prenomDemandeur, numeroDemandeur, urgence, budget, quartier }) {
+function msgAdmin({ titre, annonceId, prix, nomProprio, numeroProprio, prenomDemandeur, numeroDemandeur, urgence, budget, visite, message, score, quartier }) {
   const ts = new Date().toLocaleString("fr-FR", { timeZone: "Africa/Brazzaville" });
-  return `🔔 DEMANDE CHEZMOI
 
-  Annonce: ${titre} #${annonceId}
-  Prix: ${Number(prix).toLocaleString("fr-FR")} FC
-  Proprio: ${nomProprio} ${numeroProprio}
-  Demandeur: ${prenomDemandeur} ${numeroDemandeur}
-  Urgence: ${urgence}
-  Budget: ${budget}
-  Quartier: ${quartier}
-  Heure: ${ts}`;
+  const niveauLabel = score >= 71 ? "A — Très sérieux 🟢"
+                    : score >= 41 ? "B — Sérieux 🟡"
+                    :               "C — Moyen 🔴";
+
+  const urgenceLabel = {
+    "IMMEDIAT":      "Immédiat ⚡",
+    "1_2_JOURS":     "1–2 jours 🔥",
+    "CETTE_SEMAINE": "Cette semaine 📅",
+    "PLUS_TARD":     "Exploration 👀"
+  }[urgence] || urgence;
+
+  const budgetLabel = {
+    "OK":       "Confirmé ✅",
+    "NEGO":     "À négocier 🤝",
+    "PAS_PRET": "Pas prêt ⏳"
+  }[budget] || budget;
+
+  const visiteLabel = {
+    "AUJOURD_HUI":  "Aujourd'hui",
+    "DEMAIN":       "Demain",
+    "CETTE_SEMAINE":"Cette semaine",
+    "PAS_SUR":      "Pas sûr"
+  }[visite] || visite || "—";
+
+  const ligneMessage = message && message.trim()
+    ? `\nMessage libre : "${message.trim()}"`
+    : "";
+
+  return `🔔 NOUVELLE DEMANDE CHEZMOI
+  ━━━━━━━━━━━━━━━
+  📊 Score : ${score}/100 · Niveau ${niveauLabel}
+  ⏱️ Emménagement : ${urgenceLabel}
+  📍 Visite : ${visiteLabel}
+  💰 Budget : ${budgetLabel}${ligneMessage}
+  🕐 Heure : ${ts}
+
+  ━━━━━━━━━━━━━━━
+  🏠 ANNONCE
+  Titre : ${titre} (#${annonceId})
+  Quartier : ${quartier}
+  Prix : ${Number(prix).toLocaleString("fr-FR")} XAF
+
+  ━━━━━━━━━━━━━━━
+  👔 PROPRIO
+  Nom : ${nomProprio}
+  Tél : ${numeroProprio}
+
+  ━━━━━━━━━━━━━━━
+  👤 DEMANDEUR
+  Prénom : ${prenomDemandeur}
+  Tél : ${numeroDemandeur}`;
 }
 
-function msgDemandeur({ prenomDemandeur, titre, quartier, prix }) {
+function msgDemandeur({
+    prenomDemandeur,
+    titre,
+    quartier,
+    prix,
+    score,
+    urgence,
+    budget,
+    visite
+  }) {
+
+  const niveauLabel = score >= 71
+    ? "🟢 Profil prioritaire"
+    : score >= 41
+    ? "🟡 Profil correct"
+    :"🟠 Profil en cours d’optimisation";
+
+  const urgenceLabel = {
+    "IMMEDIAT":      "⚡ Immédiat",
+    "1_2_JOURS":     "🔥 1–2 jours",
+    "CETTE_SEMAINE": "📅 Cette semaine",
+    "PLUS_TARD":     "👀 Exploration"
+  }[urgence] || urgence;
+
+  const budgetLabel = {
+    "OK":       "✅ Budget confirmé",
+    "NEGO":     "🤝 À négocier",
+    "PAS_PRET": "⏳ Pas encore prêt"
+  }[budget] || budget;
+
+  const visiteLabel = {
+    "AUJOURD_HUI":   "Aujourd'hui",
+    "DEMAIN":        "Demain",
+    "CETTE_SEMAINE": "Cette semaine",
+    "PAS_SUR":       "Pas encore sûr"
+  }[visite] || visite;
+
   return `✅ Salut ${prenomDemandeur} !
 
-  Ta demande ChezMoi a bien été envoyée au propriétaire 📨
+  Ta demande ChezMoi a bien été transmise au propriétaire 📨
 
-  Annonce :
+  ━━━━━━━━━━━━━━━
+  🏠 ANNONCE
+  ━━━━━━━━━━━━━━━
   🏠 ${titre}
   📍 ${quartier}
-  💰 ${Number(prix).toLocaleString("fr-FR")} FC
+  💰 ${Number(prix).toLocaleString("fr-FR")} XAF
 
-  Le propriétaire examine ta demande.
-  ChezMoi te prévient dès qu'il répond.`;
+  ━━━━━━━━━━━━━━━
+  📊 TON DOSSIER
+  ━━━━━━━━━━━━━━━
+  Indice de priorité : ${score}/100
+  Niveau : ${niveauLabel}
+
+  ⏱️ Emménagement : ${urgenceLabel}
+  💰 Budget : ${budgetLabel}
+  📅 Visite : ${visiteLabel}
+
+  ━━━━━━━━━━━━━━━
+  🧠 ANALYSE CHEZMOI
+  ━━━━━━━━━━━━━━━
+  Ton dossier a été analysé automatiquement avant transmission au propriétaire.
+
+  Les propriétaires répondent généralement plus vite aux profils :
+  ⚡ disponibles rapidement
+  ✅ avec budget confirmé
+  📅 avec date de visite claire
+
+  ━━━━━━━━━━━━━━━
+  🔒 SÉCURITÉ
+  ━━━━━━━━━━━━━━━
+  Aucun paiement n’est demandé avant validation du propriétaire.
+
+  ⏳ Le propriétaire examine maintenant ta demande.
+  ChezMoi te prévient dès qu'il répond 🤝`;
 }
 
-function msgAfterAccept({ prenomDemandeur, numeroDemandeur, nomProprio, numeroProprio, quartier, prix }) {
-  return `🎉 EXCELLENTE NOUVELLE ${prenomDemandeur} !
+function msgAfterAccept({
+  prenomDemandeur,
+  nomProprio,
+  numeroProprio,
+  quartier,
+  prix
+  }) {
+  return `🎉 Bonne nouvelle ${prenomDemandeur} !
 
-  ${nomProprio} vient d'accepter ta demande 🖤
-  Il a ton numéro et va te contacter.
-  Ou appelle-le direct : 📞 ${numeroProprio}
+  Le propriétaire a accepté votre demande sur ChezMoi ✅
 
-  Message prêt :
-  "Bonjour ${nomProprio}, c'est ${prenomDemandeur} via ChezMoi. Je suis intéressé par le bien ${quartier} à ${Number(prix).toLocaleString("fr-FR")} FC. Dispo quand pour visiter ?"`;
+  ━━━━━━━━━━━━━━━
+  🏠 LOGEMENT
+  ━━━━━━━━━━━━━━━
+  📍 ${quartier}
+  💰 ${Number(prix).toLocaleString("fr-FR")} XAF
+
+  ━━━━━━━━━━━━━━━
+  📞 CONTACT PROPRIÉTAIRE
+  ━━━━━━━━━━━━━━━
+  👤 ${nomProprio}
+  📞 ${numeroProprio}
+
+  ━━━━━━━━━━━━━━━
+  ⚡ CONSEIL CHEZMOI
+  ━━━━━━━━━━━━━━━
+  Les bons logements partent souvent rapidement.
+
+  Nous vous conseillons de :
+  • confirmer votre intérêt rapidement
+  • organiser une visite
+  • éviter tout paiement avant visite réelle
+
+  ━━━━━━━━━━━━━━━
+  💬 MESSAGE SUGGÉRÉ
+  ━━━━━━━━━━━━━━━
+  Bonjour ${nomProprio}, c’est ${prenomDemandeur} via ChezMoi. Merci pour votre retour. Je suis disponible pour échanger concernant le logement à ${quartier}.
+
+  ChezMoi — Immobilier au Congo 🇨🇬`;
 }
 
-function msgAfterAcceptProprio({ nomProprio, prenomDemandeur, numeroDemandeur, quartier, prix }) {
-  return `Merci ${nomProprio} 🙏 Contact envoyé à ${prenomDemandeur} !
+function msgAfterAcceptProprio({
+  nomProprio,
+  prenomDemandeur,
+  numeroDemandeur,
+  quartier,
+  prix
+  }) {
+  return `✅ Demande validée ${nomProprio}
 
-  Voici son numéro : ${numeroDemandeur}
+  Le contact du locataire a été débloqué avec succès.
 
-  Message suggéré :
-  "Bonjour ${prenomDemandeur}, c'est ${nomProprio} de ChezMoi. Pour le bien ${quartier} à ${Number(prix).toLocaleString("fr-FR")} FC, dispo quand ?"
+  ━━━━━━━━━━━━━━━
+  👤 LOCATAIRE
+  ━━━━━━━━━━━━━━━
+  Prénom : ${prenomDemandeur}
+  📞 ${numeroDemandeur}
 
-  ⚠️ 1 plainte arnaque = suppression directe
-  2 plaintes = bannissement définitif`;
+  ━━━━━━━━━━━━━━━
+  🏠 LOGEMENT
+  ━━━━━━━━━━━━━━━
+  📍 ${quartier}
+  💰 ${Number(prix).toLocaleString("fr-FR")} XAF
+
+  ━━━━━━━━━━━━━━━
+  🤝 CONSEIL CHEZMOI
+  ━━━━━━━━━━━━━━━
+  Prenez quelques minutes pour :
+  • confirmer la disponibilité du bien
+  • fixer une visite claire
+  • éviter toute demande d’argent suspecte
+
+  ━━━━━━━━━━━━━━━
+  💬 MESSAGE SUGGÉRÉ
+  ━━━━━━━━━━━━━━━
+  Bonjour ${prenomDemandeur}, c’est ${nomProprio} via ChezMoi. Votre demande pour le logement à ${quartier} a bien été acceptée. Quand êtes-vous disponible pour échanger ou visiter ?
+
+  ⚠️ Toute activité frauduleuse entraîne une suppression immédiate du compte.`;
 }
 
-function msgAfterAcceptAdmin({ annonceId, nomProprio, prenomDemandeur }) {
-  return `✅ PROPRIO A ACCEPTÉ
-  Annonce ${annonceId}
-  ${nomProprio} a accepté ${prenomDemandeur}`;
+function msgAfterAcceptAdmin({
+  annonceId,
+  nomProprio,
+  prenomDemandeur
+  }) {
+  return `✅ MATCH VALIDÉ CHEZMOI
+
+  ━━━━━━━━━━━━━━━
+  📄 ANNONCE
+  ━━━━━━━━━━━━━━━
+  ID : ${annonceId}
+
+  ━━━━━━━━━━━━━━━
+  🤝 MATCH
+  ━━━━━━━━━━━━━━━
+  👔 Propriétaire : ${nomProprio}
+  👤 Demandeur : ${prenomDemandeur}
+
+  Le contact a été débloqué avec succès.`;
 }
 
-function msgAfterLoue({ prenomDemandeur }) {
-  return `😔 Désolé ${prenomDemandeur},
-  le propriétaire indique que ce bien est déjà loué.
+function msgAfterLoue({
+prenomDemandeur,
+quartier,
+prix
+}) {
+return `😔 Bonjour ${prenomDemandeur},
 
-  ChezMoi continue de chercher pour toi 🔎`;
+  Le propriétaire nous informe que ce logement n’est malheureusement plus disponible.
+
+  ━━━━━━━━━━━━━━━
+  🏠 LOGEMENT
+  ━━━━━━━━━━━━━━━
+  📍 ${quartier}
+  💰 ${Number(prix).toLocaleString("fr-FR")} XAF
+
+  ━━━━━━━━━━━━━━━
+  🔎 CHEZMOI CONTINUE
+  ━━━━━━━━━━━━━━━
+  Ne vous inquiétez pas 👍
+
+  De nouveaux logements sont publiés régulièrement sur ChezMoi et nous continuerons à vous proposer d’autres opportunités adaptées à votre profil.
+
+  ━━━━━━━━━━━━━━━
+  💡 CONSEIL CHEZMOI
+  ━━━━━━━━━━━━━━━
+  Les meilleurs logements partent souvent rapidement.
+
+  Pour augmenter vos chances :
+  • gardez votre téléphone disponible
+  • confirmez votre budget
+  • soyez réactif pour les visites
+
+  Merci de faire confiance à ChezMoi 🤝
+  ChezMoi — Immobilier au Congo 🇨🇬`;
 }
 
-function msgAfterLoueAdmin({ annonceId, nomProprio }) {
-  return `🔒 ANNONCE FERMÉE
-  Annonce ${annonceId} marquée déjà louée par ${nomProprio}`;
+function msgAfterLoueAdmin({
+    annonceId,
+    nomProprio
+  }) {
+  return `🔒 LOGEMENT DÉJÀ LOUÉ
+
+  ━━━━━━━━━━━━━━━
+  📄 ANNONCE
+  ━━━━━━━━━━━━━━━
+  ID : ${annonceId}
+
+  ━━━━━━━━━━━━━━━
+  👔 PROPRIÉTAIRE
+  ━━━━━━━━━━━━━━━
+  ${nomProprio} a indiqué que le logement est déjà loué.
+
+  La demande a été clôturée automatiquement.`;
 }
 
-function msgAfterRefuse({ prenomDemandeur }) {
-  return `😕 ${prenomDemandeur}, le propriétaire n'est pas intéressé pour cette demande.
 
-  ChezMoi libère ta place pour d'autres opportunités.`;
+function msgAfterRefuse({
+    prenomDemandeur,
+    quartier,
+    prix
+  }) {
+  return `😕 Bonjour ${prenomDemandeur},
+
+  Le propriétaire a choisi de ne pas donner suite à cette demande pour le moment.
+
+  ━━━━━━━━━━━━━━━
+  🏠 LOGEMENT
+  ━━━━━━━━━━━━━━━
+  📍 ${quartier}
+  💰 ${Number(prix).toLocaleString("fr-FR")} XAF
+
+  ━━━━━━━━━━━━━━━
+  🔎 CHEZMOI CONTINUE
+  ━━━━━━━━━━━━━━━
+  Chaque propriétaire a ses propres critères de sélection et cela ne remet pas en cause votre profil 👍
+
+  De nouvelles opportunités correspondant à votre recherche seront bientôt disponibles sur ChezMoi.
+
+  ━━━━━━━━━━━━━━━
+  💡 CONSEIL CHEZMOI
+  ━━━━━━━━━━━━━━━
+  Pour augmenter vos chances :
+  • gardez un budget clair
+  • soyez réactif aux demandes
+  • proposez rapidement une visite
+
+  Merci de faire confiance à ChezMoi 🤝
+  ChezMoi — Immobilier au Congo 🇨🇬`;
 }
 
-function msgAfterRefuseAdmin({ annonceId, nomProprio, prenomDemandeur }) {
+function msgAfterRefuseAdmin({
+    annonceId,
+    nomProprio,
+    prenomDemandeur
+  }) {
   return `❌ DEMANDE REFUSÉE
-  Annonce ${annonceId}
-  ${nomProprio} a refusé ${prenomDemandeur}`;
+
+  ━━━━━━━━━━━━━━━
+  📄 ANNONCE
+  ━━━━━━━━━━━━━━━
+  ID : ${annonceId}
+
+  ━━━━━━━━━━━━━━━
+  🤝 DÉCISION
+  ━━━━━━━━━━━━━━━
+  👔 Propriétaire : ${nomProprio}
+  👤 Demandeur : ${prenomDemandeur}
+
+  Le propriétaire a refusé la demande de contact.`;
 }
 
 module.exports = {
