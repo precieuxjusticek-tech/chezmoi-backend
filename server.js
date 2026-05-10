@@ -214,133 +214,140 @@ const db = admin.firestore();
 
 /* --- INSCRIPTION --- */
 app.post("/api/register", async (req, res) => {
-    const { nom, email, password, inscontact } = req.body;
-    if (!nom || !email || !password || !inscontact) {
-        return res.status(400).json({ message: "Tous les champs sont obligatoires" });
-    }
-    if (typeof inscontact !== "string" || inscontact.length < 5) {
-        return res.status(400).json({ message: "Le contact est invalide" });
-    }
-    try {
-        const userRecord = await admin.auth().createUser({ email });
+  const { nom, email, password, inscontact, role } = req.body;
+  const rolesValides = ["locataire", "agent", "proprietaire"];
+  if (!nom || !email || !password || !inscontact) {
+    return res.status(400).json({ message: "Tous les champs sont obligatoires" });
+  }
+  if (!role || !rolesValides.includes(role)) {
+    return res.status(400).json({ message: "Rôle invalide ou manquant" });
+  }
+  if (typeof inscontact !== "string" || inscontact.length < 5) {
+    return res.status(400).json({ message: "Le contact est invalide" });
+  }
+  try {
+    const userRecord = await admin.auth().createUser({ email });
 
-        await admin.auth().updateUser(userRecord.uid, {
-            password: password
-        });
-        await db.collection("users").doc(userRecord.uid).set({
-            uid: userRecord.uid,
-            nom,
-            email,
-            inscontact,
-            createdAt: admin.firestore.Timestamp.now()
-        });
-        res.status(201).json({ message: "Utilisateur créé", uid: userRecord.uid });
-    } catch (error) {
-        res.status(400).json({ message: error.message });
-    }
+    await admin.auth().updateUser(userRecord.uid, {
+      password: password
+    });
+    await db.collection("users").doc(userRecord.uid).set({
+      uid: userRecord.uid,
+      nom,
+      email,
+      inscontact,
+      role,
+      createdAt: admin.firestore.Timestamp.now()
+    });
+    res.status(201).json({ message: "Utilisateur créé", uid: userRecord.uid });
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
 });
 
 /* --- CONNEXION --- */
 app.post("/api/login", async (req, res) => {
-    const { email, password } = req.body;
-    try {
-        const apiKey = process.env.FIREBASE_API_KEY;
-        const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${apiKey}`;
-        const response = await fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ email, password, returnSecureToken: true })
-        });
-        const data = await response.json();
-        if (data.error) {
-            let message = "Erreur de connexion";
-            if (data.error.message === "EMAIL_NOT_FOUND") message = "Email introuvable";
-            else if (data.error.message === "INVALID_PASSWORD") message = "Mot de passe incorrect";
-            else if (data.error.message === "INVALID_EMAIL") message = "Email invalide";
-            return res.status(400).json({ message });
-        }
-        res.status(200).json({ message: "Connexion réussie", uid: data.localId });
-    } catch (error) {
-        res.status(500).json({ message: error.message });
+  const { email, password } = req.body;
+  try {
+    const apiKey = process.env.FIREBASE_API_KEY;
+    const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${apiKey}`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password, returnSecureToken: true })
+    });
+    const data = await response.json();
+    if (data.error) {
+      let message = "Erreur de connexion";
+      if (data.error.message === "EMAIL_NOT_FOUND") message = "Email introuvable";
+      else if (data.error.message === "INVALID_PASSWORD") message = "Mot de passe incorrect";
+      else if (data.error.message === "INVALID_EMAIL") message = "Email invalide";
+      return res.status(400).json({ message });
     }
+    res.status(200).json({ message: "Connexion réussie", uid: data.localId });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
 });
 
 /* ===================================================== */
 /* ================= GOOGLE AUTH ======================= */
 /* ===================================================== */
 app.post("/api/google-auth", async (req, res) => {
-    const { idToken, inscontact } = req.body;
-    if (!idToken) return res.status(400).json({ message: "Token manquant" });
+  const { idToken, inscontact } = req.body;
+  if (!idToken) return res.status(400).json({ message: "Token manquant" });
 
-    try {
-        const decoded = await admin.auth().verifyIdToken(idToken);
-        const { uid, name, email } = decoded;
+  try {
+    const decoded = await admin.auth().verifyIdToken(idToken);
+    const { uid, name, email } = decoded;
 
-        const userRef = db.collection("users").doc(uid);
-        const userDoc = await userRef.get();
+    const userRef = db.collection("users").doc(uid);
+    const userDoc = await userRef.get();
 
-        if (!userDoc.exists) {
-            if (!inscontact) {
-                return res.status(400).json({
-                    message: "contact_required",
-                    nom: name || "",
-                    email: email
-                });
-            }
-            await userRef.set({
-                uid,
-                nom: name || "",
-                email,
-                inscontact,
-                provider: "google",
-                createdAt: admin.firestore.Timestamp.now()
-            });
-            return res.status(201).json({ message: "Compte créé", uid, isNew: true });
-        }
-
-        return res.status(200).json({ message: "Connexion réussie", uid, isNew: false });
-
-    } catch (err) {
-        console.error("Erreur Google Auth:", err);
-        if (err.code === "auth/id-token-expired") {
-            return res.status(401).json({ message: "Session expirée, réessayez" });
-        }
-        if (err.code === "auth/argument-error") {
-            return res.status(401).json({ message: "user_not_found" });
-        }
-        res.status(500).json({ message: "Erreur serveur" });
+    if (!userDoc.exists) {
+      if (!inscontact) {
+        return res.status(400).json({
+          message: "contact_required",
+          nom: name || "",
+          email: email
+        });
+      }
+      const roleGoogle = req.body.role || "locataire";
+      await userRef.set({
+        uid,
+        nom: name || "",
+        email,
+        inscontact,
+        role: roleGoogle,
+        provider: "google",
+        createdAt: admin.firestore.Timestamp.now()
+      });
+      return res.status(201).json({ message: "Compte créé", uid, isNew: true });
     }
+
+    return res.status(200).json({ message: "Connexion réussie", uid, isNew: false });
+
+  } catch (err) {
+    console.error("Erreur Google Auth:", err);
+    if (err.code === "auth/id-token-expired") {
+      return res.status(401).json({ message: "Session expirée, réessayez" });
+    }
+    if (err.code === "auth/argument-error") {
+      return res.status(401).json({ message: "user_not_found" });
+    }
+    res.status(500).json({ message: "Erreur serveur" });
+  }
 });
 
 /* --- mot de passe oublié --- */
 app.post("/api/password-reset", async (req, res) => {
-    const { email } = req.body;
-    if (!email) return res.status(400).json({ message: "Email requis" });
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ message: "Email requis" });
 
-    try {
-        await admin.auth().getUserByEmail(email);
-        const link = await admin.auth().generatePasswordResetLink(email);
+  try {
+    await admin.auth().getUserByEmail(email);
+    const link = await admin.auth().generatePasswordResetLink(email);
 
-        const transporter = nodemailer.createTransport({
-            service: "gmail",
-            auth: {
-                user: process.env.GMAIL_USER,
-                pass: process.env.GMAIL_PASS
-            }
-        });
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: process.env.GMAIL_USER,
+        pass: process.env.GMAIL_PASS
+      }
+    });
 
-        await transporter.sendMail({
-            from: `"ChezMoi" <${process.env.GMAIL_USER}>`,
-            to: email,
-            subject: "Réinitialisation mot de passe",
-            text: `Cliquez sur ce lien pour réinitialiser votre mot de passe :\n${link}`
-        });
+    await transporter.sendMail({
+      from: `"ChezMoi" <${process.env.GMAIL_USER}>`,
+      to: email,
+      subject: "Réinitialisation mot de passe",
+      text: `Cliquez sur ce lien pour réinitialiser votre mot de passe :\n${link}`
+    });
 
-        res.json({ message: "Email envoyé" });
+    res.json({ message: "Email envoyé" });
 
-    } catch (error) {
-        res.status(400).json({ message: "Email introuvable" });
-    }
+  } catch (error) {
+    res.status(400).json({ message: "Email introuvable" });
+  }
 });
 
 /* ===================================================== */
@@ -356,7 +363,7 @@ app.post("/api/annonces", upload.array("images", 15), async (req, res) => {
       nbDouches, charges, climatiseur, balcon, groupe_electrogene, forage, cuisine,
       type_cuisine, toilettes, meuble, disponibilite, disponibiliteDate, wifi, fraisVisite,
       type_sol, voirie, cloture, viabilisee, facade,
-      titre_propriete, negociable, delai_vente
+      titre_propriete, negociable, delai_vente, commission
     } = req.body;
 
     if (!uid || !titre || !type_annonce || !description || !prix || !ville || !quartier || !contact) {
@@ -455,6 +462,7 @@ app.post("/api/annonces", upload.array("images", 15), async (req, res) => {
       cuisine: cuisine || "",
       type_cuisine: type_cuisine || "",
       fraisVisite: fraisVisite || "",
+      commission: commission || "",
       type_sol: type_sol || "",
       voirie: voirie || "",
       cloture: cloture || "",
@@ -463,7 +471,6 @@ app.post("/api/annonces", upload.array("images", 15), async (req, res) => {
       titre_propriete: titre_propriete || "",
       negociable: negociable || "",
       delai_vente: delai_vente || "",
-
       images: imagesUrls,
       imagesDeleteUrls: imagesDeleteUrls,
       statut: "published",           // publiée directement
@@ -537,11 +544,20 @@ app.get("/api/annonces", async (req, res) => {
       purgerAnnoncesExpirees();
 
       // Récupère annonces valides
-      const snapshot = await db.collection("annonces")
+      const [snapshotPublished, snapshotLoue] = await Promise.all([
+        db.collection("annonces")
           .where("expireAt", ">", now)
           .where("statut", "==", "published")
-          .get();
-      const annonces = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+          .get(),
+        db.collection("annonces")
+          .where("expireAt", ">", now)
+          .where("statut", "==", "loue")
+          .get()
+      ]);
+      const annonces = [
+        ...snapshotPublished.docs.map(doc => ({ id: doc.id, ...doc.data() })),
+        ...snapshotLoue.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+      ];
 
       res.json(annonces);
 
@@ -601,16 +617,22 @@ app.get("/api/annonces/user/:uid", async (req, res) => {
         const { uid } = req.params;
         const now = admin.firestore.Timestamp.now();
 
-        const snapshot = await db.collection("annonces")
+        const [snapshotPublished, snapshotLoue] = await Promise.all([
+          db.collection("annonces")
             .where("uid", "==", uid)
             .where("expireAt", ">", now)
             .where("statut", "==", "published")
-            .get();
-
-        const annonces = snapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data()
-        }));
+            .get(),
+          db.collection("annonces")
+            .where("uid", "==", uid)
+            .where("expireAt", ">", now)
+            .where("statut", "==", "loue")
+            .get()
+        ]);
+        const annonces = [
+          ...snapshotPublished.docs.map(doc => ({ id: doc.id, ...doc.data() })),
+          ...snapshotLoue.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+        ];
 
         res.json(annonces);
 
@@ -710,8 +732,8 @@ app.get("/api/annonces/:id", async (req, res) => {
             return res.status(410).json({ message: "Annonce expirée" });
         }
 
-        if (annonce.statut !== "published") {
-            return res.status(403).json({ message: "Annonce non disponible" });
+        if (annonce.statut !== "published" && annonce.statut !== "loue") {
+          return res.status(403).json({ message: "Annonce non disponible" });
         }
 
         res.json({ id: annonceDoc.id, ...annonce });
@@ -777,25 +799,27 @@ app.delete("/api/annonces/:id", async (req, res) => {
 app.put("/api/user/:uid", async (req, res) => {
     try {
         const { uid } = req.params;
-        const { nom, email, inscontact } = req.body;
+        const { nom, email, inscontact, role } = req.body;
 
         if (!nom || !email || !inscontact) {
-            return res.status(400).json({ message: "Tous les champs sont obligatoires" });
+          return res.status(400).json({ message: "Tous les champs sont obligatoires" });
         }
 
         const userRef = db.collection("users").doc(uid);
         const userDoc = await userRef.get();
 
         if (!userDoc.exists) {
-            return res.status(404).json({ message: "Utilisateur introuvable" });
+          return res.status(404).json({ message: "Utilisateur introuvable" });
         }
 
-        await userRef.update({
-            nom,
-            email,
-            inscontact,
-            updatedAt: admin.firestore.Timestamp.now()
-        });
+        const updateData = {
+          nom,
+          email,
+          inscontact,
+          updatedAt: admin.firestore.Timestamp.now()
+        };
+        if (role) updateData.role = role;
+        await userRef.update(updateData);
 
         await admin.auth().updateUser(uid, { email });
 
@@ -942,7 +966,7 @@ app.get("/api/contact-requests/status", async (req, res) => {
 // POST — Créer une demande de contact
 /* ======================== */
 app.post("/api/contact-requests", async (req, res) => {
-  const { annonceId, ownerId, userId, prenom, whatsapp, urgence, budget, visite, message } = req.body;
+  const { annonceId, ownerId, userId, prenom, whatsapp, urgence, budget, visite, message, commissionChoice, commission } = req.body;
 
   if (!annonceId || !userId || !prenom || !whatsapp || !urgence || !budget || !visite || !message) {
     return res.status(400).json({ message: "Champs manquants" });
@@ -984,9 +1008,11 @@ app.post("/api/contact-requests", async (req, res) => {
       budget,
       visite,
       message,
+      commissionChoice: commissionChoice || "",
+      commission: commission || "",
       createdAt: admin.firestore.Timestamp.now(),
       status: "nouvelle"
-    });
+    }); 
 
     // ===== NOTIFICATIONS WHATSAPP =====
     // On lance en arrière-plan — ne bloque pas la réponse
@@ -1027,22 +1053,25 @@ app.post("/api/contact-requests", async (req, res) => {
         const score = calcScore(urgence, budget, visite, message);
 
         const contexte = {
-          titre:           annonce.titre || "Annonce",
-          prix:            annonce.prix  || "0",
-          ville:           annonce.ville || "",
-          quartier:        annonce.quartier || "",
+          titre:            annonce.titre || "Annonce",
+          type_annonce:     annonce.type_annonce || "Logement",
+          prix:             annonce.prix  || "0",
+          ville:            annonce.ville || "",
+          quartier:         annonce.quartier || "",
           annonceId,
-          nomProprio:      owner.nom        || "Propriétaire",
-          numeroProprio:   owner.inscontact || annonce.contact || "",
-          prenomDemandeur: prenom,
-          numeroDemandeur: whatsapp,
+          nomProprio:       owner.nom        || "Propriétaire",
+          numeroProprio:    owner.inscontact || annonce.contact || "",
+          prenomDemandeur:  prenom,
+          numeroDemandeur:  whatsapp,
           urgence,
           budget,
           visite,
           message,
           score,
           token,
-          compteur
+          compteur,
+          commission:       commission || "",
+          commissionChoice: commissionChoice || ""
         };
 
         // Formater les numéros (le format international sans +)
@@ -1457,13 +1486,14 @@ async function getContexteAction(data) {
   const req = reqSnap.empty ? {} : reqSnap.docs[0].data();
 
   return {
-    annonceId:       data.annonceId,
-    nomProprio:      owner.nom        || "Propriétaire",
-    numeroProprio:   String(owner.inscontact || annonce.contact || "").replace(/\D/g, ""),
-    prenomDemandeur: req.prenom       || "le locataire",
-    numeroDemandeur: String(req.whatsapp || "").replace(/\D/g, ""),
-    quartier:        annonce.quartier || "",
-    prix:            annonce.prix     || "0",
+    annonceId:        data.annonceId,
+    nomProprio:       owner.nom        || "Propriétaire",
+    numeroProprio:    String(owner.inscontact || annonce.contact || "").replace(/\D/g, ""),
+    prenomDemandeur:  req.prenom       || "le locataire",
+    numeroDemandeur:  String(req.whatsapp || "").replace(/\D/g, ""),
+    quartier:         annonce.quartier || "Quartier non défini",
+    prix:             annonce.prix     || "0",
+    type_annonce:     annonce.type_annonce || "Logement",
     numAdmin
   };
 }
@@ -1571,10 +1601,12 @@ app.post("/api/whatsapp/action/loue", async (req, res) => {
     await markActionStatus(result.ref, "closed_loue");
 
     try {
+      const SEPT_JOURS = 7 * 24 * 60 * 60 * 1000;
+      const nouvelleExpiration = admin.firestore.Timestamp.fromDate(new Date(Date.now() + SEPT_JOURS));
       await db.collection("annonces").doc(result.data.annonceId).update({
         statut: "loue",
-        active: false,
-        louéAt: admin.firestore.Timestamp.now()
+        louéAt: admin.firestore.Timestamp.now(),
+        expireAt: nouvelleExpiration
       });
     } catch (e) {
       console.error("[Action/loue] Erreur désactivation annonce:", e.message);
@@ -1676,13 +1708,13 @@ app.post("/api/whatsapp-profil-faible", async (req, res) => {
 /* ==================================== */
 
 app.put("/api/annonces/:id", async (req, res) => {
-  const { uid, prix, quartier, repere, contact, description, fraisVisite, caution, avanceMax } = req.body;
+  const { uid, prix, quartier, repere, contact, description, fraisVisite, caution, avanceMax, commission } = req.body;
   try {
     const ref = db.collection("annonces").doc(req.params.id);
     const doc = await ref.get();
     if (!doc.exists) return res.status(404).json({ message: "Introuvable" });
     if (doc.data().uid !== uid) return res.status(403).json({ message: "Non autorisé" });
-    await ref.update({ prix, quartier, repere, contact, description, fraisVisite, caution, avanceMax,
+    await ref.update({ prix, quartier, repere, contact, description, fraisVisite, caution, avanceMax, commission,
       updatedAt: admin.firestore.Timestamp.now() });
     res.json({ message: "Annonce mise à jour" });
   } catch (err) {

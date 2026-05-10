@@ -123,7 +123,7 @@ async function creerActionRequest(db, { annonceId, ownerUid, requesterUid }) {
 /**
  * Message propriétaire AVEC liens d'action
  */
-function msgProprietaire({ nomProprio, titre, prix, ville, quartier, prenomDemandeur, urgence, budget, visite, message, score, token, compteur }) {
+function msgProprietaire({ nomProprio, titre, type_annonce, prix, ville, quartier, prenomDemandeur, urgence, budget, visite, message, score, token, compteur, commission, commissionChoice }) {
   const backendUrl = process.env.BACKEND_URL || "https://chezmoi-backend.onrender.com";
 
   const niveauLabel = score >= 71 ? "🟢 Profil A — Très sérieux"
@@ -154,6 +154,16 @@ function msgProprietaire({ nomProprio, titre, prix, ville, quartier, prenomDeman
     ? `\n✍️ Message : "${message.trim()}"`
     : "";
 
+  let ligneCommission = "";
+  if (commission && commission.trim()) {
+      const choixLabel = commissionChoice === "payer"
+          ? "💰 Le locataire indique pouvoir payer les frais"
+          : commissionChoice === "negocier"
+          ? "🤝 Le locataire souhaite négocier les frais"
+          : "";
+      ligneCommission = `\n💼 Frais de commission : ${commission.trim()}${choixLabel ? `\n${choixLabel}` : ""}`;
+  }
+
   return `Bonjour ${nomProprio} 👋
 
   ChezMoi vous transmet une demande de contact qualifiée pour votre annonce.
@@ -161,7 +171,7 @@ function msgProprietaire({ nomProprio, titre, prix, ville, quartier, prenomDeman
   ━━━━━━━━━━━━━━━
   🏠 VOTRE ANNONCE
   ━━━━━━━━━━━━━━━
-  📌 ${titre}
+  ${type_annonce || titre}
   📍 ${quartier}, ${ville}
   💰 ${Number(prix).toLocaleString("fr-FR")} XAF
 
@@ -171,7 +181,7 @@ function msgProprietaire({ nomProprio, titre, prix, ville, quartier, prenomDeman
   Prénom : ${prenomDemandeur}
   Emménagement : ${urgenceLabel}
   Visite : ${visiteLabel}
-  Budget : ${budgetLabel}${ligneMessage}
+  Budget : ${budgetLabel}${ligneMessage}${ligneCommission}
 
   ━━━━━━━━━━━━━━━
   📊 ANALYSE CHEZMOI
@@ -198,7 +208,7 @@ function msgProprietaire({ nomProprio, titre, prix, ville, quartier, prenomDeman
   ChezMoi — Immobilier au Congo 🇨🇬`;
 }
 
-function msgAdmin({ titre, annonceId, prix, nomProprio, numeroProprio, prenomDemandeur, numeroDemandeur, urgence, budget, visite, message, score, quartier }) {
+function msgAdmin({ titre, type_annonce, annonceId, prix, nomProprio, numeroProprio, prenomDemandeur, numeroDemandeur, urgence, budget, visite, message, score, quartier, commission, commissionChoice }) {
   const ts = new Date().toLocaleString("fr-FR", { timeZone: "Africa/Brazzaville" });
 
   const niveauLabel = score >= 71 ? "A — Très sérieux 🟢"
@@ -229,17 +239,24 @@ function msgAdmin({ titre, annonceId, prix, nomProprio, numeroProprio, prenomDem
     ? `\nMessage libre : "${message.trim()}"`
     : "";
 
+  let ligneCommissionAdmin = "";
+  if (commission && commission.trim()) {
+      const choixLabel = commissionChoice === "payer" ? "peut payer"
+                      : commissionChoice === "negocier" ? "veut négocier" : "—";
+      ligneCommissionAdmin = `\nCommission : ${commission.trim()} (${choixLabel})`;
+  }
+
   return `🔔 NOUVELLE DEMANDE CHEZMOI
   ━━━━━━━━━━━━━━━
   📊 Score : ${score}/100 · Niveau ${niveauLabel}
   ⏱️ Emménagement : ${urgenceLabel}
   📍 Visite : ${visiteLabel}
-  💰 Budget : ${budgetLabel}${ligneMessage}
+  💰 Budget : ${budgetLabel}${ligneMessage}${ligneCommissionAdmin}
   🕐 Heure : ${ts}
 
   ━━━━━━━━━━━━━━━
   🏠 ANNONCE
-  Titre : ${titre} (#${annonceId})
+  Bien : ${type_annonce || titre} (#${annonceId})
   Quartier : ${quartier}
   Prix : ${Number(prix).toLocaleString("fr-FR")} XAF
 
@@ -257,6 +274,7 @@ function msgAdmin({ titre, annonceId, prix, nomProprio, numeroProprio, prenomDem
 function msgDemandeur({
     prenomDemandeur,
     titre,
+    type_annonce,
     quartier,
     prix,
     score,
@@ -298,7 +316,7 @@ function msgDemandeur({
   ━━━━━━━━━━━━━━━
   🏠 ANNONCE
   ━━━━━━━━━━━━━━━
-  🏠 ${titre}
+  🏠 ${type_annonce || titre}
   📍 ${quartier}
   💰 ${Number(prix).toLocaleString("fr-FR")} XAF
 
@@ -333,6 +351,7 @@ function msgDemandeur({
 
 function msgAfterAccept({
   prenomDemandeur,
+  type_annonce,
   nomProprio,
   numeroProprio,
   quartier,
@@ -345,6 +364,7 @@ function msgAfterAccept({
   ━━━━━━━━━━━━━━━
   🏠 LOGEMENT
   ━━━━━━━━━━━━━━━
+  🏠 ${type_annonce}
   📍 ${quartier}
   💰 ${Number(prix).toLocaleString("fr-FR")} XAF
 
@@ -433,17 +453,19 @@ function msgAfterAcceptAdmin({
 }
 
 function msgAfterLoue({
-prenomDemandeur,
-quartier,
-prix
-}) {
-return `😔 Bonjour ${prenomDemandeur},
+  prenomDemandeur,
+  quartier,
+  prix,
+  type_annonce
+  }) {
+  return `😔 Bonjour ${prenomDemandeur},
 
   Le propriétaire nous informe que ce logement n’est malheureusement plus disponible.
 
   ━━━━━━━━━━━━━━━
   🏠 LOGEMENT
   ━━━━━━━━━━━━━━━
+  🏠 ${type_annonce}
   📍 ${quartier}
   💰 ${Number(prix).toLocaleString("fr-FR")} XAF
 
@@ -491,7 +513,8 @@ function msgAfterLoueAdmin({
 function msgAfterRefuse({
     prenomDemandeur,
     quartier,
-    prix
+    prix,
+    type_annonce
   }) {
   return `😕 Bonjour ${prenomDemandeur},
 
@@ -500,6 +523,7 @@ function msgAfterRefuse({
   ━━━━━━━━━━━━━━━
   🏠 LOGEMENT
   ━━━━━━━━━━━━━━━
+  🏠 ${type_annonce}
   📍 ${quartier}
   💰 ${Number(prix).toLocaleString("fr-FR")} XAF
 
