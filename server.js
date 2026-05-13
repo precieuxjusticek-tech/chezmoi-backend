@@ -378,7 +378,7 @@ app.post("/api/annonces", upload.array("images", 15), async (req, res) => {
     catch { return res.status(400).json({ message: "Utilisateur introuvable" }); }
 
     // ======= EXPIRATION 30 JOURS =======
-    const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+    const THIRTY_DAYS = 90 * 24 * 60 * 60 * 1000;
     const expireAt = admin.firestore.Timestamp.fromDate(new Date(Date.now() + THIRTY_DAYS));
     const now = new Date();
 
