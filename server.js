@@ -1722,6 +1722,12 @@ app.put("/api/annonces/:id", async (req, res) => {
   }
 });
 
+/* ================================= */
+/* ======= endopoint pour teste de connexion entre le backend et le frontend ====== */
+/* ================================= */
+app.get("/ping", (req, res) => res.json({ ok: true }));
+app.head("/ping", (req, res) => res.sendStatus(200));
+
 /* ===================================================== */
 /* ================== LANCEMENT SERVEUR =============== */
 /* ===================================================== */
