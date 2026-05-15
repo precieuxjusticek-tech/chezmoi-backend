@@ -16,7 +16,8 @@ const {
   msgProprietaire, msgAdmin, msgDemandeur,
   msgAfterAccept, msgAfterAcceptProprio, msgAfterAcceptAdmin,
   msgAfterLoue, msgAfterLoueAdmin,
-  msgAfterRefuse, msgAfterRefuseAdmin
+  msgAfterRefuse, msgAfterRefuseAdmin,
+  msgBienvenue, msgConnexion
 } = require("./whatsapp");
 
 cloudinary.config({
@@ -240,6 +241,17 @@ app.post("/api/register", async (req, res) => {
       createdAt: admin.firestore.Timestamp.now()
     });
     res.status(201).json({ message: "Utilisateur créé", uid: userRecord.uid });
+    
+    // ===== MESSAGE WHATSAPP DE BIENVENUE SELON LE RÔLE =====
+    (async () => {
+      try {
+        const num = String(inscontact).replace(/\D/g, "");
+        const prenom = nom.split(" ")[0];
+        if (num) await sendWhatsApp(num, msgBienvenue({ prenom, role }));
+      } catch (err) {
+        console.error("[Bienvenue] Erreur envoi WhatsApp:", err.message);
+      }
+    })();
   } catch (error) {
     res.status(400).json({ message: error.message });
   }
@@ -264,7 +276,25 @@ app.post("/api/login", async (req, res) => {
       else if (data.error.message === "INVALID_EMAIL") message = "Email invalide";
       return res.status(400).json({ message });
     }
-    res.status(200).json({ message: "Connexion réussie", uid: data.localId });
+    // APRÈS
+    const uid = data.localId;
+    res.status(200).json({ message: "Connexion réussie", uid });
+
+    // ===== MESSAGE WHATSAPP DE RECONNEXION SELON LE RÔLE =====
+    (async () => {
+      try {
+        const userDoc = await db.collection("users").doc(uid).get();
+        if (!userDoc.exists) return;
+        const user = userDoc.data();
+        const num = String(user.inscontact || "").replace(/\D/g, "");
+        const prenom = (user.nom || "").split(" ")[0];
+        if (num) await sendWhatsApp(num, msgConnexion({ prenom, role: user.role }));
+      } catch (err) {
+        console.error("[Connexion] Erreur envoi WhatsApp:", err.message);
+      }
+    })();
+    // ===== FIN MESSAGE RECONNEXION =====
+
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -302,10 +332,43 @@ app.post("/api/google-auth", async (req, res) => {
         provider: "google",
         createdAt: admin.firestore.Timestamp.now()
       });
-      return res.status(201).json({ message: "Compte créé", uid, isNew: true });
+      
+      res.status(201).json({ message: "Compte créé", uid, isNew: true });
+
+      // ===== MESSAGE WHATSAPP DE BIENVENUE SELON LE RÔLE =====
+      (async () => {
+        try {
+          const num = String(inscontact).replace(/\D/g, "");
+          const prenom = (name || "").split(" ")[0];
+          if (num) await sendWhatsApp(num, msgBienvenue({ prenom, role: roleGoogle }));
+        } catch (err) {
+          console.error("[Bienvenue Google] Erreur envoi WhatsApp:", err.message);
+        }
+      })();
+      // ===== FIN MESSAGE BIENVENUE =====
+
+      return;
     }
 
-    return res.status(200).json({ message: "Connexion réussie", uid, isNew: false });
+    // APRÈS
+    res.status(200).json({ message: "Connexion réussie", uid, isNew: false });
+
+    // ===== MESSAGE WHATSAPP DE RECONNEXION SELON LE RÔLE =====
+    (async () => {
+      try {
+        const userDoc = await db.collection("users").doc(uid).get();
+        if (!userDoc.exists) return;
+        const user = userDoc.data();
+        const num = String(user.inscontact || "").replace(/\D/g, "");
+        const prenom = (user.nom || "").split(" ")[0];
+        if (num) await sendWhatsApp(num, msgConnexion({ prenom, role: user.role }));
+      } catch (err) {
+        console.error("[Connexion Google] Erreur envoi WhatsApp:", err.message);
+      }
+    })();
+    // ===== FIN MESSAGE RECONNEXION =====
+
+    return;
 
   } catch (err) {
     console.error("Erreur Google Auth:", err);
@@ -609,39 +672,6 @@ app.get("/api/user/:uid", async (req, res) => {
     }
 });
 
-/* ===================================================== */
-/* ========= GET ANNONCES PAR UTILISATEUR ============== */
-/* ===================================================== */
-app.get("/api/annonces/user/:uid", async (req, res) => {
-    try {
-        const { uid } = req.params;
-        const now = admin.firestore.Timestamp.now();
-
-        const [snapshotPublished, snapshotLoue] = await Promise.all([
-          db.collection("annonces")
-            .where("uid", "==", uid)
-            .where("expireAt", ">", now)
-            .where("statut", "==", "published")
-            .get(),
-          db.collection("annonces")
-            .where("uid", "==", uid)
-            .where("expireAt", ">", now)
-            .where("statut", "==", "loue")
-            .get()
-        ]);
-        const annonces = [
-          ...snapshotPublished.docs.map(doc => ({ id: doc.id, ...doc.data() })),
-          ...snapshotLoue.docs.map(doc => ({ id: doc.id, ...doc.data() }))
-        ];
-
-        res.json(annonces);
-
-    } catch (error) {
-        console.error("Erreur récupération annonces utilisateur :", error);
-        res.status(500).json({ message: error.message });
-    }
-});
-
 /* ================= FAVORIS ================= */
 
 // Ajouter une annonce aux favoris
@@ -709,6 +739,39 @@ app.get("/api/favorites/:uid", async (req, res) => {
 
     } catch (error) {
         console.error("Erreur récupération favoris :", error);
+        res.status(500).json({ message: error.message });
+    }
+});
+
+/* ===================================================== */
+/* ========= GET ANNONCES PAR UTILISATEUR ============== */
+/* ===================================================== */
+app.get("/api/annonces/user/:uid", async (req, res) => {
+    try {
+        const { uid } = req.params;
+        const now = admin.firestore.Timestamp.now();
+
+        const [snapshotPublished, snapshotLoue] = await Promise.all([
+          db.collection("annonces")
+            .where("uid", "==", uid)
+            .where("expireAt", ">", now)
+            .where("statut", "==", "published")
+            .get(),
+          db.collection("annonces")
+            .where("uid", "==", uid)
+            .where("expireAt", ">", now)
+            .where("statut", "==", "loue")
+            .get()
+        ]);
+        const annonces = [
+          ...snapshotPublished.docs.map(doc => ({ id: doc.id, ...doc.data() })),
+          ...snapshotLoue.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+        ];
+
+        res.json(annonces);
+
+    } catch (error) {
+        console.error("Erreur récupération annonces utilisateur :", error);
         res.status(500).json({ message: error.message });
     }
 });

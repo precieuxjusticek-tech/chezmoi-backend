@@ -567,6 +567,109 @@ function msgAfterRefuseAdmin({
   Le propriétaire a refusé la demande de contact.`;
 }
 
+// ===================================================
+// MESSAGE DE BIENVENUE APRÈS INSCRIPTION (selon rôle)
+// ===================================================
+function msgBienvenue({ prenom, role }) {
+  const p = prenom || "cher utilisateur";
+
+  if (role === "proprietaire") {
+    return `🎉 Bienvenue sur ChezMoi, ${p}
+
+    Votre compte propriétaire est prêt ✅
+
+    Publiez votre bien en moins de 2 minutes :
+    1️⃣ Cliquez sur "+"
+    2️⃣ Ajoutez quartier, prix, photos et description
+    3️⃣ Publiez et recevez des demandes directement sur WhatsApp
+
+    📱 Important : enregistrez ce numéro sous "ChezMoi". C'est ici que vous recevrez les contacts des clients intéressés.
+
+    Besoin d'aide ? Un bug ? Une idée pour améliorer ChezMoi ? Écrivez-nous ici directement.`;
+  }
+
+  if (role === "agent") {
+    return `💼 Bienvenue sur ChezMoi, ${p}
+
+    Votre espace agent est maintenant actif ✅
+
+    Pour publier votre première annonce :
+    1️⃣ Ouvrez "Chezmoi"
+    2️⃣ Cliquez sur "+"
+    3️⃣ Ajoutez les infos du bien puis publiez
+
+    Les clients intéressés pourront vous contacter directement via WhatsApp.
+
+    📱 Pensez à enregistrer ce numéro sous "ChezMoi" pour recevoir toutes les demandes.
+
+    Une idée ou un problème ? Écrivez-nous ici, on répond rapidement.`;
+  }
+
+  // locataire (défaut)
+  return `🏠 Bienvenue sur ChezMoi, ${p}
+
+  Votre compte est prêt ✅
+
+  Vous pouvez maintenant trouver des maisons et studios selon :
+  📍 le quartier
+  💰 votre budget
+  🏡 le type de logement
+
+  Comment commencer :
+  1️⃣ Ouvrez "Chezmoi"
+  2️⃣ Appliquez vos filtres
+  3️⃣ Contactez directement le propriétaire ou l'agent via WhatsApp
+
+  📱 Enregistrez ce numéro sous "ChezMoi" pour ne manquer aucune réponse.
+
+  Besoin d'aide ou une suggestion ? Écrivez-nous ici directement.`;
+}
+
+// ===================================================
+// MESSAGE DE RECONNEXION APRÈS CONNEXION (selon rôle)
+// ===================================================
+function msgConnexion({ prenom, role }) {
+  const p = prenom || "cher utilisateur";
+
+  if (role === "proprietaire") {
+    return `👋 Bon retour sur ChezMoi, ${p}
+
+    Votre tableau de bord est prêt ✅
+
+    Consultez vos annonces, répondez aux demandes reçues et publiez de nouveaux biens en quelques minutes.
+
+    📱 Ce numéro reste votre canal principal pour recevoir les messages des clients intéressés.
+
+    Un problème ? Une idée d'amélioration ? Écrivez-nous ici directement.`;
+  }
+
+  if (role === "agent") {
+    return `💼 Content de vous revoir, ${p}
+
+    Votre espace agent est à jour ✅
+
+    Profitez-en pour :
+    1️⃣ Ajouter de nouveaux biens
+    2️⃣ Répondre aux clients
+    3️⃣ Relancer vos anciennes annonces
+
+    📱 Gardez ce numéro enregistré sous "ChezMoi" pour recevoir toutes les demandes importantes.
+
+    Une suggestion pour améliorer votre expérience ? Écrivez-nous ici directement.`;
+  }
+
+  // locataire (défaut)
+  return `🏠 Bon retour sur ChezMoi, ${p}
+
+  De nouvelles annonces sont disponibles depuis votre dernière visite ✅
+
+  Ouvrez "Recherche", appliquez vos filtres par quartier et budget puis contactez directement les propriétaires ou agents via WhatsApp.
+
+  📱 Pensez à enregistrer ce numéro sous "ChezMoi" pour recevoir rapidement les réponses.
+
+  Un souci avec la recherche ou une suggestion ? Écrivez-nous ici directement.`;
+}
+
 module.exports = {
   sendWhatsApp,
   generateSecureToken,
@@ -582,5 +685,7 @@ module.exports = {
   msgAfterLoue,
   msgAfterLoueAdmin,
   msgAfterRefuse,
-  msgAfterRefuseAdmin
+  msgAfterRefuseAdmin,
+  msgBienvenue,
+  msgConnexion
 };
