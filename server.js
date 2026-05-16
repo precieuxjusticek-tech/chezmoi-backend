@@ -245,6 +245,7 @@ app.post("/api/register", async (req, res) => {
     // ===== MESSAGE WHATSAPP DE BIENVENUE SELON LE RÔLE =====
     (async () => {
       try {
+        console.log("[Bienvenue] 🔔 Bloc déclenché, inscontact:", inscontact);
         const num = String(inscontact).replace(/\D/g, "");
         const prenom = nom.split(" ")[0];
         if (num) await sendWhatsApp(num, msgBienvenue({ prenom, role }));
@@ -283,6 +284,7 @@ app.post("/api/login", async (req, res) => {
     // ===== MESSAGE WHATSAPP DE RECONNEXION SELON LE RÔLE =====
     (async () => {
       try {
+        console.log("[Connexion] 🔔 Bloc déclenché, uid:", uid)
         const userDoc = await db.collection("users").doc(uid).get();
         if (!userDoc.exists) return;
         const user = userDoc.data();
@@ -338,6 +340,7 @@ app.post("/api/google-auth", async (req, res) => {
       // ===== MESSAGE WHATSAPP DE BIENVENUE SELON LE RÔLE =====
       (async () => {
         try {
+          console.log("[Bienvenue] 🔔 Bloc déclenché, inscontact:", inscontact);
           const num = String(inscontact).replace(/\D/g, "");
           const prenom = (name || "").split(" ")[0];
           if (num) await sendWhatsApp(num, msgBienvenue({ prenom, role: roleGoogle }));
@@ -356,6 +359,7 @@ app.post("/api/google-auth", async (req, res) => {
     // ===== MESSAGE WHATSAPP DE RECONNEXION SELON LE RÔLE =====
     (async () => {
       try {
+        console.log("[Connexion] 🔔 Bloc déclenché, uid:", uid)
         const userDoc = await db.collection("users").doc(uid).get();
         if (!userDoc.exists) return;
         const user = userDoc.data();
@@ -1015,7 +1019,14 @@ app.get("/api/contact-requests/status", async (req, res) => {
         .where("annonceId", "==", annonceId)
         .where("userId", "==", userId)
         .get();
-      dejaUtilise = !userSnap.empty;
+
+      // ✅ CORRECTIF : "dejaUtilise" est vrai seulement si la demande existe
+      // ET que l'annonce n'est pas simplement louée (ce qui ne doit pas bloquer l'user)
+      if (!userSnap.empty) {
+        const req = userSnap.docs[0].data();
+        // Bloquer seulement si c'est une vraie demande envoyée, pas juste une annonce louée
+        dejaUtilise = req.annonceStatut !== "loue";
+      }
     }
 
     res.json({ used, dejaUtilise });
@@ -1050,14 +1061,17 @@ app.post("/api/contact-requests", async (req, res) => {
       return res.status(429).json({ message: "Quota de contacts atteint pour aujourd'hui." });
     }
 
-    // Vérifier si ce user a déjà demandé
     const snapUser = await db.collection("contact_requests")
       .where("annonceId", "==", annonceId)
       .where("userId", "==", userId)
       .get();
 
+    // ✅ CORRECTIF : ne bloquer que si la demande est active (pas si l'annonce est juste louée)
     if (!snapUser.empty) {
-      return res.status(409).json({ message: "Vous avez déjà utilisé votre accès pour cette annonce." });
+      const existingReq = snapUser.docs[0].data();
+      if (existingReq.annonceStatut !== "loue") {
+        return res.status(409).json({ message: "Vous avez déjà utilisé votre accès pour cette annonce." });
+      }
     }
 
     // Enregistrer
@@ -1661,6 +1675,7 @@ app.post("/api/whatsapp/action/loue", async (req, res) => {
     if (!confirmCheck.valid) {
       return res.status(403).json({ ok: false, reason: confirmCheck.reason });
     }
+    // APRÈS
     await markActionStatus(result.ref, "closed_loue");
 
     try {
@@ -1671,6 +1686,18 @@ app.post("/api/whatsapp/action/loue", async (req, res) => {
         louéAt: admin.firestore.Timestamp.now(),
         expireAt: nouvelleExpiration
       });
+
+      // ✅ CORRECTIF : marquer uniquement les contact_requests de CETTE annonce
+      // comme "annonce_louee" sans bloquer l'user sur d'autres annonces
+      const reqsSnap = await db.collection("contact_requests")
+        .where("annonceId", "==", result.data.annonceId)
+        .get();
+      const batch = db.batch();
+      reqsSnap.docs.forEach(doc => {
+        batch.update(doc.ref, { annonceStatut: "loue" });
+      });
+      await batch.commit();
+
     } catch (e) {
       console.error("[Action/loue] Erreur désactivation annonce:", e.message);
     }
