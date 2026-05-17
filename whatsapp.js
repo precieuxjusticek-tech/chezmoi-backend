@@ -29,12 +29,24 @@ async function sendWhatsApp(phoneRaw, message) {
     return;
   }
 
+  if (!WHATSAPP_BOT_URL) {
+    console.error(`[WhatsApp] ❌ WHATSAPP_BOT_URL non défini`);
+    return;
+  }
+
   try {
     const res = await fetch(WHATSAPP_BOT_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ phone, message })
     });
+
+    // ← AJOUT : vérifier que c'est du JSON avant de parser
+    const contentType = res.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) {
+      console.error(`[WhatsApp] ❌ Bot endormi ou indisponible pour ${phone} (reçu HTML au lieu de JSON)`);
+      return;
+    }
 
     const data = await res.json();
 
