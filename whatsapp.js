@@ -34,29 +34,63 @@ async function sendWhatsApp(phoneRaw, message) {
     return;
   }
 
+  const botBase = WHATSAPP_BOT_URL.replace("/send-message", "");
+
+  // ===== ATTENDRE QUE LE BOT SOIT PRÊT (max 90s) =====
+  let botPret = false;
+  for (let i = 0; i < 18; i++) { // 18 tentatives × 5s = 90s max
+    try {
+      const statusRes = await fetch(`${botBase}/status`, {
+        method: "GET",
+        headers: { "Content-Type": "application/json" }
+      });
+      const contentType = statusRes.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        const statusData = await statusRes.json();
+        if (statusData.connected) {
+          botPret = true;
+          console.log(`[WhatsApp] ✅ Bot prêt (tentative ${i + 1})`);
+          break;
+        } else {
+          console.log(`[WhatsApp] ⏳ Bot pas encore prêt... (${(i + 1) * 5}s)`);
+        }
+      } else {
+        console.log(`[WhatsApp] ⏳ Bot qui se réveille... (${(i + 1) * 5}s)`);
+      }
+    } catch {
+      console.log(`[WhatsApp] ⏳ Bot inaccessible... (${(i + 1) * 5}s)`);
+    }
+    await new Promise(r => setTimeout(r, 5000)); // attendre 5s entre chaque tentative
+  }
+
+  if (!botPret) {
+    console.error(`[WhatsApp] ❌ Bot non disponible après 90s — message abandonné pour ${phone}`);
+    return;
+  }
+
+  // ===== ENVOI DU MESSAGE =====
   try {
+    console.log(`[WhatsApp] → Envoi à ${phone}`);
     const res = await fetch(WHATSAPP_BOT_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ phone, message })
     });
 
-    // ← AJOUT : vérifier que c'est du JSON avant de parser
     const contentType = res.headers.get("content-type") || "";
     if (!contentType.includes("application/json")) {
-      console.error(`[WhatsApp] ❌ Bot endormi ou indisponible pour ${phone} (reçu HTML au lieu de JSON)`);
+      console.error(`[WhatsApp] ❌ Réponse non-JSON pour ${phone}`);
       return;
     }
 
     const data = await res.json();
-
     if (data.success) {
       console.log(`[WhatsApp] ✅ Livré à ${phone}`);
     } else {
       console.error(`[WhatsApp] ❌ Échec pour ${phone}:`, data.error);
     }
   } catch (err) {
-    console.error(`[WhatsApp] ❌ Erreur pour ${phone}: ${err.message}`);
+    console.error(`[WhatsApp] ❌ Erreur envoi pour ${phone}: ${err.message}`);
   }
 }
 

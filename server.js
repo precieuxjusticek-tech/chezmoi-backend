@@ -248,8 +248,7 @@ app.post("/api/register", async (req, res) => {
         
         const num = String(inscontact).replace(/\D/g, "");
         const prenom = nom.split(" ")[0];
-        // Attendre 35s que le bot se réveille
-        await new Promise(r => setTimeout(r, 35000));
+
         if (num) await sendWhatsApp(num, msgBienvenue({ prenom, role }));
       } catch (err) {
         console.error("[Bienvenue] Erreur envoi WhatsApp:", err.message);
@@ -292,8 +291,7 @@ try {
       const user = userDoc.data();
       const num = String(user.inscontact || "").replace(/\D/g, "");
       const prenom = (user.nom || "").split(" ")[0];
-      // Attendre 35s que le bot se réveille
-      await new Promise(r => setTimeout(r, 35000));
+
       if (num) await sendWhatsApp(num, msgConnexion({ prenom, role: user.role }));
       } catch (err) {
         console.error("[Connexion] Erreur envoi WhatsApp:", err.message);
@@ -347,8 +345,7 @@ app.post("/api/google-auth", async (req, res) => {
           
           const num = String(inscontact).replace(/\D/g, "");
           const prenom = (name || "").split(" ")[0];
-          // Attendre 35s que le bot se réveille
-          await new Promise(r => setTimeout(r, 35000));
+
           if (num) await sendWhatsApp(num, msgBienvenue({ prenom, role: roleGoogle }));
         } catch (err) {
           console.error("[Bienvenue Google] Erreur envoi WhatsApp:", err.message);
@@ -370,8 +367,7 @@ app.post("/api/google-auth", async (req, res) => {
         const user = userDoc.data();
         const num = String(user.inscontact || "").replace(/\D/g, "");
         const prenom = (user.nom || "").split(" ")[0];
-        // Attendre 35s que le bot se réveille
-        await new Promise(r => setTimeout(r, 35000));
+
         if (num) await sendWhatsApp(num, msgConnexion({ prenom, role: user.role }));
       } catch (err) {
         console.error("[Connexion Google] Erreur envoi WhatsApp:", err.message);
