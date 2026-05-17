@@ -227,17 +227,14 @@ app.post("/api/register", async (req, res) => {
     return res.status(400).json({ message: "Le contact est invalide" });
   }
   try {
-    const userRecord = await admin.auth().createUser({ email });
-
-    await admin.auth().updateUser(userRecord.uid, {
-      password: password
-    });
+    const userRecord = await admin.auth().createUser({ email, password });
     await db.collection("users").doc(userRecord.uid).set({
       uid: userRecord.uid,
       nom,
       email,
       inscontact,
       role,
+      provider: "email", // ← AJOUTER
       createdAt: admin.firestore.Timestamp.now()
     });
     res.status(201).json({ message: "Utilisateur créé", uid: userRecord.uid });
@@ -336,6 +333,11 @@ app.post("/api/google-auth", async (req, res) => {
         provider: "google",
         createdAt: admin.firestore.Timestamp.now()
       });
+
+      const passwordGoogle = req.body.password;
+      if (passwordGoogle) {
+        await admin.auth().updateUser(uid, { password: passwordGoogle });
+      }
       
       res.status(201).json({ message: "Compte créé", uid, isNew: true });
 
@@ -867,86 +869,90 @@ app.delete("/api/annonces/:id", async (req, res) => {
 /* ================= MODIFIER UTILISATEUR ============== */
 /* ===================================================== */
 app.put("/api/user/:uid", async (req, res) => {
-    try {
-        const { uid } = req.params;
-        const { nom, email, inscontact, role } = req.body;
+  try {
+    const { uid } = req.params;
+    const { nom, email, inscontact, role, newPassword } = req.body;
 
-        if (!nom || !email || !inscontact) {
-          return res.status(400).json({ message: "Tous les champs sont obligatoires" });
-        }
-
-        const userRef = db.collection("users").doc(uid);
-        const userDoc = await userRef.get();
-
-        if (!userDoc.exists) {
-          return res.status(404).json({ message: "Utilisateur introuvable" });
-        }
-
-        const updateData = {
-          nom,
-          email,
-          inscontact,
-          updatedAt: admin.firestore.Timestamp.now()
-        };
-        if (role) updateData.role = role;
-        await userRef.update(updateData);
-
-        await admin.auth().updateUser(uid, { email });
-
-        res.json({ message: "Profil mis à jour avec succès" });
-
-    } catch (error) {
-        console.error("Erreur modification utilisateur :", error);
-        res.status(500).json({ message: error.message });
+    if (!nom || !email || !inscontact) {
+      return res.status(400).json({ message: "Tous les champs sont obligatoires" });
     }
+
+    const userRef = db.collection("users").doc(uid);
+    const userDoc = await userRef.get();
+
+    if (!userDoc.exists) {
+      return res.status(404).json({ message: "Utilisateur introuvable" });
+    }
+
+    const updateData = {
+      nom,
+      email,
+      inscontact,
+      updatedAt: admin.firestore.Timestamp.now()
+    };
+    if (role) updateData.role = role;
+    await userRef.update(updateData);
+
+    await admin.auth().updateUser(uid, { email });
+
+    if (newPassword && newPassword.length >= 6) {
+      await admin.auth().updateUser(uid, { password: newPassword });
+    }
+
+    res.json({ message: "Profil mis à jour avec succès" });
+
+  } catch (error) {
+    console.error("Erreur modification utilisateur :", error);
+    res.status(500).json({ message: error.message });
+  }
 });
 
 /* ===================================================== */
 /* ================== SIGNALER UN PROBLEME ============= */
 /* ===================================================== */
 app.post("/api/report", async (req, res) => {
-    const { nom, email, sujet, message, annonce } = req.body;
+  const { nom, email, sujet, message, annonce } = req.body;
 
-    if (!nom || !email || !sujet || !message || !annonce) {
-        return res.status(400).json({ message: "Tous les champs sont obligatoires" });
-    }
+  if (!nom || !email || !sujet || !message || !annonce) {
+      return res.status(400).json({ message: "Tous les champs sont obligatoires" });
+  }
 
-    try {
-        const transporter = nodemailer.createTransport({
-            service: "gmail",
-            auth: {
-                user: process.env.GMAIL_USER,
-                pass: process.env.GMAIL_PASS
-            }
-        });
+  try {
+    const transporter = nodemailer.createTransport({
+        service: "gmail",
+        auth: {
+            user: process.env.GMAIL_USER,
+            pass: process.env.GMAIL_PASS
+        }
+    });
 
-        const mailOptions = {
-            from: `"${nom}" <${email}>`,
-            to: process.env.GMAIL_USER,
-            subject: `Signalement: ${sujet}`,
-            text:
-            `Nom: ${nom}
-            Email: ${email}
+    const mailOptions = {
+        from: `"${nom}" <${email}>`,
+        to: process.env.GMAIL_USER,
+        subject: `Signalement: ${sujet}`,
+        text:
+        `Nom: ${nom}
+        Email: ${email}
 
-            Message:
-            ${message}
+        Message:
+        ${message}
 
-            Annonce concernée:
-            - ID: ${annonce.id}
-            - Titre: ${annonce.titre}
-            - Type: ${annonce.type}
-            - Ville: ${annonce.ville}
-            - Quartier: ${annonce.quartier}
-            - Prix: ${annonce.prix} FCFA`
-        };
+        Annonce concernée:
+        - ID: ${annonce.id}
+        - Titre: ${annonce.titre}
+        - Type: ${annonce.type}
+        - Ville: ${annonce.ville}
+        - Quartier: ${annonce.quartier}
+        - Prix: ${annonce.prix} FCFA`
+    };
 
-        await transporter.sendMail(mailOptions);
-        res.status(200).json({ message: "Signalement envoyé avec succès !" });
+    await transporter.sendMail(mailOptions);
+    res.status(200).json({ message: "Signalement envoyé avec succès !" });
 
-    } catch (error) {
-        console.error("Erreur envoi mail report :", error);
-        res.status(500).json({ message: "Impossible d'envoyer le signalement" });
-    }
+  } catch (error) {
+    console.error("Erreur envoi mail report :", error);
+    res.status(500).json({ message: "Impossible d'envoyer le signalement" });
+  }
 });
 
 /* ===================================================== */
@@ -1545,18 +1551,14 @@ function htmlConfirmation({ token, confirmId, action, emoji, titre, message, cou
 }
 
 async function getContexteAction(data) {
-  // data = contenu du doc action_requests
   const numAdmin = String(process.env.ULTRAMSG_ADMIN_PHONE || "").replace(/\D/g, "");
 
-  // Récupérer annonce
   const annonceDoc = await db.collection("annonces").doc(data.annonceId).get();
   const annonce = annonceDoc.exists ? annonceDoc.data() : {};
 
-  // Récupérer proprio
   const ownerDoc = await db.collection("users").doc(data.ownerUid).get();
   const owner = ownerDoc.exists ? ownerDoc.data() : {};
 
-  // Récupérer demandeur depuis contact_requests
   const reqSnap = await db.collection("contact_requests")
     .where("annonceId", "==", data.annonceId)
     .where("userId", "==", data.requesterUid)
@@ -1567,13 +1569,19 @@ async function getContexteAction(data) {
 
   return {
     annonceId:        data.annonceId,
-    nomProprio:       owner.nom        || "Propriétaire",
-    numeroProprio:    String(owner.inscontact || annonce.contact || "").replace(/\D/g, ""),
-    prenomDemandeur:  req.prenom       || "le locataire",
-    numeroDemandeur:  String(req.whatsapp || "").replace(/\D/g, ""),
-    quartier:         annonce.quartier || "Quartier non défini",
-    prix:             annonce.prix     || "0",
+    // Annonce
+    titre:            annonce.titre        || "Annonce",
     type_annonce:     annonce.type_annonce || "Logement",
+    prix:             annonce.prix         || "0",
+    ville:            annonce.ville        || "",
+    quartier:         annonce.quartier     || "Quartier non défini",
+    // Proprio
+    nomProprio:       owner.nom            || "Propriétaire",
+    numeroProprio:    String(owner.inscontact || annonce.contact || "").replace(/\D/g, ""),
+    // Demandeur
+    prenomDemandeur:  req.prenom           || "le locataire",
+    numeroDemandeur:  String(req.whatsapp  || "").replace(/\D/g, ""),
+    // Admin
     numAdmin
   };
 }
@@ -1620,25 +1628,43 @@ app.post("/api/whatsapp/action/accept", async (req, res) => {
       return res.status(403).json({ ok: false, reason: confirmCheck.reason });
     }
     await markActionStatus(result.ref, "accepted");
-
     res.json({ ok: true });
 
-    // Notifications en arrière-plan (identique à avant)
     (async () => {
       try {
         const ctx = await getContexteAction(result.data);
-        const { nomProprio, numeroProprio, prenomDemandeur, numeroDemandeur, numAdmin, annonceId, quartier, prix } = ctx;
-        if (numeroDemandeur) await sendWhatsApp(numeroDemandeur, msgAfterAccept({ prenomDemandeur, numeroDemandeur, nomProprio, numeroProprio, quartier, prix }));
-        if (numeroProprio)   await sendWhatsApp(numeroProprio,   msgAfterAcceptProprio({ nomProprio, prenomDemandeur, numeroDemandeur, quartier, prix }));
-        if (numAdmin)        await sendWhatsApp(numAdmin,        msgAfterAcceptAdmin({ annonceId, nomProprio, prenomDemandeur }));
+
+        // ✅ On utilise ctx directement partout — aucune destructuration partielle
+        if (ctx.numeroDemandeur) await sendWhatsApp(ctx.numeroDemandeur, msgAfterAccept({
+          prenomDemandeur: ctx.prenomDemandeur,
+          nomProprio:      ctx.nomProprio,
+          numeroProprio:   ctx.numeroProprio,
+          quartier:        ctx.quartier,
+          prix:            ctx.prix,
+          type_annonce:    ctx.type_annonce
+        }));
+
+        if (ctx.numeroProprio) await sendWhatsApp(ctx.numeroProprio, msgAfterAcceptProprio({
+          nomProprio:      ctx.nomProprio,
+          prenomDemandeur: ctx.prenomDemandeur,
+          numeroDemandeur: ctx.numeroDemandeur,
+          quartier:        ctx.quartier,
+          prix:            ctx.prix
+        }));
+
+        if (ctx.numAdmin) await sendWhatsApp(ctx.numAdmin, msgAfterAcceptAdmin({
+          annonceId:       ctx.annonceId,
+          nomProprio:      ctx.nomProprio,
+          prenomDemandeur: ctx.prenomDemandeur
+        }));
+
       } catch (err) {
         console.error("[Action/accept] Notif erreur:", err.message);
       }
     })();
+
   } catch (err) {
-    if (err.alreadyUsed) {
-      return res.status(410).json({ ok: false, reason: err.message });
-    }
+    if (err.alreadyUsed) return res.status(410).json({ ok: false, reason: err.message });
     res.status(500).json({ ok: false, reason: "Erreur serveur" });
   }
 });
@@ -1711,7 +1737,12 @@ app.post("/api/whatsapp/action/loue", async (req, res) => {
       try {
         const ctx = await getContexteAction(result.data);
         const { nomProprio, prenomDemandeur, numeroDemandeur, numAdmin, annonceId } = ctx;
-        if (numeroDemandeur) await sendWhatsApp(numeroDemandeur, msgAfterLoue({ prenomDemandeur }));
+        if (numeroDemandeur) await sendWhatsApp(numeroDemandeur, msgAfterLoue({ 
+          prenomDemandeur, 
+          type_annonce: ctx.type_annonce, 
+          quartier: ctx.quartier, 
+          prix: ctx.prix 
+        }));
         if (numAdmin)        await sendWhatsApp(numAdmin,        msgAfterLoueAdmin({ annonceId, nomProprio }));
       } catch (err) {
         console.error("[Action/loue] Notif erreur:", err.message);
@@ -1768,7 +1799,13 @@ app.post("/api/whatsapp/action/refuse", async (req, res) => {
       try {
         const ctx = await getContexteAction(result.data);
         const { nomProprio, prenomDemandeur, numeroDemandeur, numAdmin, annonceId } = ctx;
-        if (numeroDemandeur) await sendWhatsApp(numeroDemandeur, msgAfterRefuse({ prenomDemandeur }));
+        if (numeroDemandeur) await sendWhatsApp(numeroDemandeur, msgAfterRefuse({ 
+          prenomDemandeur, 
+          type_annonce: ctx.type_annonce, 
+          quartier: ctx.quartier, 
+          prix: ctx.prix 
+        }));
+
         if (numAdmin)        await sendWhatsApp(numAdmin,        msgAfterRefuseAdmin({ annonceId, nomProprio, prenomDemandeur }));
       } catch (err) {
         console.error("[Action/refuse] Notif erreur:", err.message);
