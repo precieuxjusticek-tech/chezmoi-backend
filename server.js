@@ -245,9 +245,11 @@ app.post("/api/register", async (req, res) => {
     // ===== MESSAGE WHATSAPP DE BIENVENUE SELON LE RÔLE =====
     (async () => {
       try {
-        console.log("[Bienvenue] 🔔 Bloc déclenché, inscontact:", inscontact);
+        
         const num = String(inscontact).replace(/\D/g, "");
         const prenom = nom.split(" ")[0];
+        // Attendre 35s que le bot se réveille
+        await new Promise(r => setTimeout(r, 35000));
         if (num) await sendWhatsApp(num, msgBienvenue({ prenom, role }));
       } catch (err) {
         console.error("[Bienvenue] Erreur envoi WhatsApp:", err.message);
@@ -260,37 +262,39 @@ app.post("/api/register", async (req, res) => {
 
 /* --- CONNEXION --- */
 app.post("/api/login", async (req, res) => {
-  const { email, password } = req.body;
-  try {
-    const apiKey = process.env.FIREBASE_API_KEY;
-    const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${apiKey}`;
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password, returnSecureToken: true })
-    });
-    const data = await response.json();
-    if (data.error) {
-      let message = "Erreur de connexion";
-      if (data.error.message === "EMAIL_NOT_FOUND") message = "Email introuvable";
-      else if (data.error.message === "INVALID_PASSWORD") message = "Mot de passe incorrect";
-      else if (data.error.message === "INVALID_EMAIL") message = "Email invalide";
-      return res.status(400).json({ message });
-    }
-    // APRÈS
-    const uid = data.localId;
-    res.status(200).json({ message: "Connexion réussie", uid });
+const { email, password } = req.body;
+try {
+  const apiKey = process.env.FIREBASE_API_KEY;
+  const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${apiKey}`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password, returnSecureToken: true })
+  });
+  const data = await response.json();
+  if (data.error) {
+    let message = "Erreur de connexion";
+    if (data.error.message === "EMAIL_NOT_FOUND") message = "Email introuvable";
+    else if (data.error.message === "INVALID_PASSWORD") message = "Mot de passe incorrect";
+    else if (data.error.message === "INVALID_EMAIL") message = "Email invalide";
+    return res.status(400).json({ message });
+  }
+  // APRÈS
+  const uid = data.localId;
+  res.status(200).json({ message: "Connexion réussie", uid });
 
-    // ===== MESSAGE WHATSAPP DE RECONNEXION SELON LE RÔLE =====
-    (async () => {
-      try {
-        console.log("[Connexion] 🔔 Bloc déclenché, uid:", uid)
-        const userDoc = await db.collection("users").doc(uid).get();
-        if (!userDoc.exists) return;
-        const user = userDoc.data();
-        const num = String(user.inscontact || "").replace(/\D/g, "");
-        const prenom = (user.nom || "").split(" ")[0];
-        if (num) await sendWhatsApp(num, msgConnexion({ prenom, role: user.role }));
+  // ===== MESSAGE WHATSAPP DE RECONNEXION SELON LE RÔLE =====
+  (async () => {
+    try {
+      
+      const userDoc = await db.collection("users").doc(uid).get();
+      if (!userDoc.exists) return;
+      const user = userDoc.data();
+      const num = String(user.inscontact || "").replace(/\D/g, "");
+      const prenom = (user.nom || "").split(" ")[0];
+      // Attendre 35s que le bot se réveille
+      await new Promise(r => setTimeout(r, 35000));
+      if (num) await sendWhatsApp(num, msgConnexion({ prenom, role: user.role }));
       } catch (err) {
         console.error("[Connexion] Erreur envoi WhatsApp:", err.message);
       }
@@ -340,9 +344,11 @@ app.post("/api/google-auth", async (req, res) => {
       // ===== MESSAGE WHATSAPP DE BIENVENUE SELON LE RÔLE =====
       (async () => {
         try {
-          console.log("[Bienvenue] 🔔 Bloc déclenché, inscontact:", inscontact);
+          
           const num = String(inscontact).replace(/\D/g, "");
           const prenom = (name || "").split(" ")[0];
+          // Attendre 35s que le bot se réveille
+          await new Promise(r => setTimeout(r, 35000));
           if (num) await sendWhatsApp(num, msgBienvenue({ prenom, role: roleGoogle }));
         } catch (err) {
           console.error("[Bienvenue Google] Erreur envoi WhatsApp:", err.message);
@@ -359,12 +365,13 @@ app.post("/api/google-auth", async (req, res) => {
     // ===== MESSAGE WHATSAPP DE RECONNEXION SELON LE RÔLE =====
     (async () => {
       try {
-        console.log("[Connexion] 🔔 Bloc déclenché, uid:", uid)
         const userDoc = await db.collection("users").doc(uid).get();
         if (!userDoc.exists) return;
         const user = userDoc.data();
         const num = String(user.inscontact || "").replace(/\D/g, "");
         const prenom = (user.nom || "").split(" ")[0];
+        // Attendre 35s que le bot se réveille
+        await new Promise(r => setTimeout(r, 35000));
         if (num) await sendWhatsApp(num, msgConnexion({ prenom, role: user.role }));
       } catch (err) {
         console.error("[Connexion Google] Erreur envoi WhatsApp:", err.message);
